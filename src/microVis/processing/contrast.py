@@ -26,7 +26,7 @@ def apply_contrast(image: np.ndarray, method: str, **params) -> np.ndarray:
         return exposure.equalize_hist(image)
 
     if method == "clahe":
-        kernel_size = int(params.get("kernel_size", 50))
+        kernel_size = int(params.get("kernel_size", 51))
         clip_limit = float(params.get("clip_limit", 0.01))
         img_uint = (image * 65535).astype(np.uint16)
         result = exposure.equalize_adapthist(img_uint, kernel_size=kernel_size,

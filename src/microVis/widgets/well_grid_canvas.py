@@ -32,7 +32,7 @@ class WellGridCanvas(QWidget):
         self._axes.set_facecolor("#252536")
 
         # Colorbar axes created once, never added/removed — avoids layout shifts
-        self._cbar_ax = self._figure.add_axes([0.91, 0.15, 0.025, 0.7])
+        self._cbar_ax = self._figure.add_axes([0.88, 0.08, 0.025, 0.86])
         self._cbar_ax.set_visible(False)
         self._cbar_ax.set_in_layout(False)
         self._colorbar = None
@@ -194,7 +194,16 @@ class WellGridCanvas(QWidget):
         for spine in self._axes.spines.values():
             spine.set_color("#333333")
 
-        self._axes.set_position([0.06, 0.08, 0.80, 0.86])
+        # Position main axes and colorbar to avoid overlap / shifting
+        if has_data and is_numeric and len(color_list) > 0:
+            main_left, main_bottom, main_width = 0.06, 0.08, 0.80
+            cbar_left = main_left + main_width + 0.02
+            self._axes.set_position([main_left, main_bottom, main_width, 0.86])
+            self._cbar_ax.set_position([cbar_left, main_bottom, 0.025, 0.86])
+        else:
+            self._axes.set_position([0.06, 0.08, 0.88, 0.86])
+            self._cbar_ax.set_visible(False)
+
         self._canvas.draw()
 
     def _on_pick(self, event) -> None:
@@ -234,5 +243,5 @@ def _compute_marker_size(n_rows: int, n_cols: int) -> float:
 
 
 def _get_format_dims(fmt_name: str) -> tuple[int, int]:
-    from refactoring._settings import PLATE_FORMATS
+    from microVis._settings import PLATE_FORMATS
     return PLATE_FORMATS.get(fmt_name, (16, 24))

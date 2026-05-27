@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from refactoring._settings import CHANNEL_COLORS
-from refactoring.widgets._event_filter import NoScrollComboBox, NoScrollDoubleSpinBox
+from microVis._settings import CHANNEL_COLORS
+from microVis.widgets._event_filter import NoScrollComboBox, NoScrollDoubleSpinBox
 
 
 class ChannelControls(QWidget):
@@ -99,5 +99,13 @@ class ChannelControls(QWidget):
         self._vmax.blockSignals(True)
         self._vmin.setValue(vmin)
         self._vmax.setValue(vmax)
+        self._vmin.blockSignals(False)
+        self._vmax.blockSignals(False)
+
+    def set_range(self, vmin: float, vmax: float) -> None:
+        self._vmin.blockSignals(True)
+        self._vmax.blockSignals(True)
+        self._vmin.setRange(vmin, vmax)
+        self._vmax.setRange(vmin, vmax)
         self._vmin.blockSignals(False)
         self._vmax.blockSignals(False)

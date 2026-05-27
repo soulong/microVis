@@ -5,10 +5,10 @@ import traceback
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
-from refactoring.processing.compositing import composite_image
-from refactoring.processing.contrast import apply_contrast, invert_image
-from refactoring.processing.overlay import extract_polygons
-from refactoring._settings import DTYPE_MAX
+from microVis.processing.compositing import composite_image
+from microVis.processing.contrast import apply_contrast, invert_image
+from microVis.processing.overlay import extract_polygons
+from microVis._settings import DTYPE_MAX
 
 
 class ImageWorker(QObject):

@@ -2,10 +2,21 @@
 from pathlib import Path
 import sys
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QColor, QIcon, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox, QSlider
 
-from refactoring.log_utils import setup_logging
+from microVis.log_utils import setup_logging
+
+
+class _GlobalScrollFilter(QObject):
+    """Event filter that blocks scroll-wheel on all input widgets app-wide."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            if isinstance(obj, (QAbstractSpinBox, QComboBox, QSlider)):
+                return True
+        return False
 
 
 def run_app(dataset_dir: str | None = None) -> None:
@@ -17,9 +28,14 @@ def run_app(dataset_dir: str | None = None) -> None:
     setup_logging()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # Block scroll-wheel on all input widgets app-wide
+    _scroll_filter = _GlobalScrollFilter(app)
+    app.installEventFilter(_scroll_filter)
     app.setApplicationName("microVis")
     app.setOrganizationName("microVis")
-    app.setApplicationVersion("0.2.0")
+    from microVis import __version__
+    app.setApplicationVersion(__version__)
 
     palette = QPalette()
     palette.setColor(QPalette.Window, QColor(30, 30, 46))
@@ -47,7 +63,7 @@ def run_app(dataset_dir: str | None = None) -> None:
     if qss_path.exists():
         app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
 
-    from refactoring.main_window import MainWindow
+    from microVis.main_window import MainWindow
 
     window = MainWindow(dataset_dir=dataset_dir)
     if icon_path.exists():

@@ -1,7 +1,11 @@
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.so
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 *.egg-info/
 dist/
 build/
@@ -14,6 +18,14 @@ logs/
 .DS_Store
 Thumbs.db
 nul
+.env
+.env.*
+.venv/
+venv/
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # Non-package files
 .opencode/

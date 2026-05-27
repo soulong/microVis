@@ -13,9 +13,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from refactoring._settings import CMAP_OPTIONS, CONTRAST_METHODS, DEFAULT_CMAP
-from refactoring.widgets.channel_controls import ChannelControls
-from refactoring.widgets._event_filter import NoScrollComboBox, NoScrollSlider
+from microVis._settings import CMAP_OPTIONS, CONTRAST_METHODS, DEFAULT_CMAP
+from microVis.widgets.channel_controls import ChannelControls
+from microVis.widgets._event_filter import NoScrollComboBox, NoScrollSlider
 
 
 class _MultiSelectCombo(QWidget):
@@ -233,3 +233,45 @@ class ImageControls(QScrollArea):
     def set_gamma_visible(self, visible: bool) -> None:
         self._gamma_slider.setVisible(visible)
         self._gamma_slider_label.setVisible(visible)
+
+    # ── Public API ──────────────────────────────────────────────────
+
+    @property
+    def contrast(self) -> NoScrollComboBox:
+        return self._contrast
+
+    @property
+    def gamma_slider(self) -> NoScrollSlider:
+        return self._gamma_slider
+
+    @property
+    def invert_button(self) -> QPushButton:
+        return self._invert_btn
+
+    @property
+    def overlay_mask(self) -> NoScrollComboBox:
+        return self._overlay_mask
+
+    @property
+    def overlay_col(self) -> NoScrollComboBox:
+        return self._overlay_col
+
+    @property
+    def overlay_cmap(self) -> NoScrollComboBox:
+        return self._overlay_cmap
+
+    @property
+    def overlay_alpha(self) -> NoScrollSlider:
+        return self._overlay_alpha
+
+    @property
+    def fields_widget(self) -> _MultiSelectCombo | None:
+        return self._fields_widget
+
+    @property
+    def stacks_widget(self) -> _MultiSelectCombo | None:
+        return self._stacks_widget
+
+    @property
+    def tps_widget(self) -> _MultiSelectCombo | None:
+        return self._tps_widget

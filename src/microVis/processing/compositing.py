@@ -4,7 +4,7 @@ from typing import Optional
 
 import numpy as np
 
-from refactoring._settings import CHANNEL_COLORS, DEFAULT_CHANNEL_COLORS
+from microVis._settings import CHANNEL_COLORS, DEFAULT_CHANNEL_COLORS
 
 
 def composite_image(

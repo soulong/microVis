@@ -11,7 +11,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from refactoring.widgets._event_filter import NoScrollComboBox
+from microVis.widgets._event_filter import NoScrollComboBox
+
+
+
 
 
 
@@ -98,3 +101,29 @@ class WellGridControls(QScrollArea):
         layout.addStretch()
 
         self.setWidget(container)
+
+    # ── Public API ──────────────────────────────────────────────────
+
+    @property
+    def plate_format(self) -> NoScrollComboBox:
+        return self._plate_fmt
+
+    @property
+    def table(self) -> NoScrollComboBox:
+        return self._table
+
+    @property
+    def column(self) -> NoScrollComboBox:
+        return self._column
+
+    @property
+    def aggregation(self) -> NoScrollComboBox:
+        return self._agg
+
+    @property
+    def colormap(self) -> NoScrollComboBox:
+        return self._cmap
+
+    @property
+    def palette(self) -> NoScrollComboBox:
+        return self._palette

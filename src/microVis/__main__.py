@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 def main() -> None:
+    from microVis import __version__
+
     parser = argparse.ArgumentParser(
         prog="microvis-gui",
         description="microVis -- interactive visualization for microProfiler microscopy datasets",
@@ -22,7 +24,7 @@ def main() -> None:
         help="Path to a measurement directory to load on startup",
     )
     parser.add_argument(
-        "--version", action="version", version="microVis 0.2.0",
+        "--version", action="version", version=f"%(prog)s {__version__}",
     )
     args = parser.parse_args()
 
@@ -31,7 +33,7 @@ def main() -> None:
         dataset_dir = str(Path(args.dataset_dir).resolve())
 
     # Import after argument parsing for faster --version/--help
-    from refactoring.app import run_app
+    from microVis.app import run_app
 
     run_app(dataset_dir)
 

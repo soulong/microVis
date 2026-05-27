@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from matplotlib.cm import get_cmap
+import matplotlib.pyplot as plt
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -189,7 +189,7 @@ def _draw_polygon_overlays(
     painter = QPainter(result)
     painter.setRenderHint(QPainter.Antialiasing)
 
-    cmap = get_cmap(cmap_name)
+    cmap = plt.colormaps[cmap_name]
     rng = np.random.RandomState(42)
     gold_pen = QPen(QColor(0xFF, 0xD7, 0x00), 1.0)
 

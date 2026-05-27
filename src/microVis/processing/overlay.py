@@ -18,6 +18,6 @@ def extract_polygons(mask: np.ndarray, min_area: int = 5) -> list[tuple[int, np.
         if np.sum(binary) < min_area:
             continue
         contours = measure.find_contours(binary, level=0.5)
-        if contours:
-            polygons.append((int(lbl), contours[0]))
+        for contour in contours:
+            polygons.append((int(lbl), contour))
     return polygons

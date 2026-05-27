@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from refactoring._settings import (
+from microVis._settings import (
     AGG_METHODS,
     CMAP_OPTIONS,
     CONTRAST_METHODS,
@@ -26,17 +26,17 @@ from refactoring._settings import (
     PLATE_FORMATS,
     QUALITATIVE_PALETTES,
 )
-from refactoring.io.data_module import DataModule
-from refactoring.processing.compositing import composite_image
-from refactoring.processing.contrast import apply_contrast, invert_image
-from refactoring.processing.overlay import extract_polygons
-from refactoring.widgets.data_view import DataView
-from refactoring.widgets.folder_selector import FolderSelector
-from refactoring.widgets.image_controls import ImageControls
-from refactoring.widgets.image_display import ImageDisplay
-from refactoring.widgets.pixel_info import PixelInfo
-from refactoring.widgets.well_grid_canvas import WellGridCanvas
-from refactoring.widgets.well_grid_controls import WellGridControls
+from microVis.io.data_module import DataModule
+from microVis.processing.compositing import composite_image
+from microVis.processing.contrast import apply_contrast, invert_image
+from microVis.processing.overlay import extract_polygons
+from microVis.widgets.data_view import DataView
+from microVis.widgets.folder_selector import FolderSelector
+from microVis.widgets.image_controls import ImageControls
+from microVis.widgets.image_display import ImageDisplay
+from microVis.widgets.pixel_info import PixelInfo
+from microVis.widgets.well_grid_canvas import WellGridCanvas
+from microVis.widgets.well_grid_controls import WellGridControls
 
 
 class MainWindow(QMainWindow):
@@ -157,7 +157,7 @@ class MainWindow(QMainWindow):
         top_splitter.addWidget(self._grid_canvas)
         top_splitter.setStretchFactor(0, 0)
         top_splitter.setStretchFactor(1, 1)
-        top_splitter.setSizes([220, 600])
+        top_splitter.setSizes([260, 600])
 
         # ── Bottom splitter: Image View ──
         bottom_splitter = QSplitter(Qt.Horizontal)
@@ -188,12 +188,12 @@ class MainWindow(QMainWindow):
 
         # Well grid controls
         gw = self._grid_controls
-        gw._plate_fmt.currentTextChanged.connect(self._on_grid_params_changed)
-        gw._table.currentTextChanged.connect(self._on_grid_table_changed)
-        gw._column.currentTextChanged.connect(self._on_grid_params_changed)
-        gw._agg.currentTextChanged.connect(self._on_grid_params_changed)
-        gw._cmap.currentTextChanged.connect(self._on_grid_params_changed)
-        gw._palette.currentTextChanged.connect(self._on_grid_params_changed)
+        gw.plate_format.currentTextChanged.connect(self._on_grid_params_changed)
+        gw.table.currentTextChanged.connect(self._on_grid_table_changed)
+        gw.column.currentTextChanged.connect(self._on_grid_params_changed)
+        gw.aggregation.currentTextChanged.connect(self._on_grid_params_changed)
+        gw.colormap.currentTextChanged.connect(self._on_grid_params_changed)
+        gw.palette.currentTextChanged.connect(self._on_grid_params_changed)
         gw.select_all_clicked.connect(self._on_select_all)
         gw.clear_clicked.connect(self._on_clear_selection)
 
@@ -204,19 +204,19 @@ class MainWindow(QMainWindow):
         ic = self._image_controls
         ic.auto_all_clicked.connect(self._on_auto_all)
         ic.channel_config_changed.connect(self._schedule_image_refresh)
-        ic._contrast.currentTextChanged.connect(self._on_contrast_changed)
-        ic._gamma_slider.valueChanged.connect(self._on_gamma_changed)
-        ic._invert_btn.toggled.connect(self._on_invert_toggled)
-        ic._overlay_mask.currentTextChanged.connect(self._on_overlay_changed)
-        ic._overlay_col.currentTextChanged.connect(self._on_overlay_changed)
-        ic._overlay_cmap.currentTextChanged.connect(self._on_overlay_changed)
-        ic._overlay_alpha.valueChanged.connect(self._on_overlay_changed)
+        ic.contrast.currentTextChanged.connect(self._on_contrast_changed)
+        ic.gamma_slider.valueChanged.connect(self._on_gamma_changed)
+        ic.invert_button.toggled.connect(self._on_invert_toggled)
+        ic.overlay_mask.currentTextChanged.connect(self._on_overlay_changed)
+        ic.overlay_col.currentTextChanged.connect(self._on_overlay_changed)
+        ic.overlay_cmap.currentTextChanged.connect(self._on_overlay_changed)
+        ic.overlay_alpha.valueChanged.connect(self._on_overlay_changed)
 
         # Image display (pixel click)
         self._image_display.pixel_clicked.connect(self._on_pixel_clicked)
 
         # Data view
-        self._data_view._table_sel.currentTextChanged.connect(self._on_data_table_changed)
+        self._data_view.table_selector.currentTextChanged.connect(self._on_data_table_changed)
 
     # ── Dataset Loading ──────────────────────────────────────────────────────
 
@@ -326,52 +326,52 @@ class MainWindow(QMainWindow):
         gm = self._dm
 
         # Plate formats
-        gw._plate_fmt.blockSignals(True)
-        gw._plate_fmt.clear()
-        gw._plate_fmt.addItems(list(PLATE_FORMATS.keys()))
-        idx = gw._plate_fmt.findText(DEFAULT_PLATE)
+        gw.plate_format.blockSignals(True)
+        gw.plate_format.clear()
+        gw.plate_format.addItems(list(PLATE_FORMATS.keys()))
+        idx = gw.plate_format.findText(DEFAULT_PLATE)
         if idx >= 0:
-            gw._plate_fmt.setCurrentIndex(idx)
-        gw._plate_fmt.blockSignals(False)
+            gw.plate_format.setCurrentIndex(idx)
+        gw.plate_format.blockSignals(False)
 
         # Tables
-        gw._table.blockSignals(True)
-        gw._table.clear()
+        gw.table.blockSignals(True)
+        gw.table.clear()
         tables = gm.get_profiling_tables()
-        gw._table.addItems(list(tables.keys()))
-        gw._table.blockSignals(False)
+        gw.table.addItems(list(tables.keys()))
+        gw.table.blockSignals(False)
 
         if tables:
             self._update_grid_columns(list(tables.keys())[0])
 
-        gw._agg.blockSignals(True)
-        gw._agg.clear()
-        gw._agg.addItems(AGG_METHODS)
-        gw._agg.blockSignals(False)
+        gw.aggregation.blockSignals(True)
+        gw.aggregation.clear()
+        gw.aggregation.addItems(AGG_METHODS)
+        gw.aggregation.blockSignals(False)
 
-        gw._cmap.blockSignals(True)
-        gw._cmap.clear()
-        gw._cmap.addItems(CMAP_OPTIONS)
-        gw._cmap.setCurrentText(DEFAULT_CMAP)
-        gw._cmap.blockSignals(False)
+        gw.colormap.blockSignals(True)
+        gw.colormap.clear()
+        gw.colormap.addItems(CMAP_OPTIONS)
+        gw.colormap.setCurrentText(DEFAULT_CMAP)
+        gw.colormap.blockSignals(False)
 
-        gw._palette.blockSignals(True)
-        gw._palette.clear()
-        gw._palette.addItems(QUALITATIVE_PALETTES)
-        gw._palette.setCurrentText("Set1")
-        gw._palette.blockSignals(False)
+        gw.palette.blockSignals(True)
+        gw.palette.clear()
+        gw.palette.addItems(QUALITATIVE_PALETTES)
+        gw.palette.setCurrentText("Set1")
+        gw.palette.blockSignals(False)
 
     def _update_grid_columns(self, table_name: str) -> None:
         if self._dm is None:
             return
         cols = self._dm.get_profiling_columns(table_name)
         gw = self._grid_controls
-        gw._column.blockSignals(True)
-        gw._column.clear()
+        gw.column.blockSignals(True)
+        gw.column.clear()
         for name, ctype, is_num in cols:
             tag = "[num]" if is_num else "[cat]"
-            gw._column.addItem(f"{name} {tag}", (name, is_num))
-        gw._column.blockSignals(False)
+            gw.column.addItem(f"{name} {tag}", (name, is_num))
+        gw.column.blockSignals(False)
 
     def _populate_image_controls(self) -> None:
         dm = self._dm
@@ -383,47 +383,47 @@ class MainWindow(QMainWindow):
             [str(s) for s in dm.get_stacks()],
             [str(t) for t in dm.get_timepoints()],
         )
-        ic._fields_widget.selection_changed.connect(self._on_image_filter_changed)
-        ic._stacks_widget.selection_changed.connect(self._on_image_filter_changed)
-        ic._tps_widget.selection_changed.connect(self._on_image_filter_changed)
+        ic.fields_widget.selection_changed.connect(self._on_image_filter_changed)
+        ic.stacks_widget.selection_changed.connect(self._on_image_filter_changed)
+        ic.tps_widget.selection_changed.connect(self._on_image_filter_changed)
 
         # Channel controls
         ic.set_channels(self._ch_config)
 
         # Overlay masks
         masks = dm.mask_names or []
-        ic._overlay_mask.blockSignals(True)
-        ic._overlay_mask.clear()
-        ic._overlay_mask.addItem("None")
-        ic._overlay_mask.addItems(masks)
-        ic._overlay_mask.blockSignals(False)
+        ic.overlay_mask.blockSignals(True)
+        ic.overlay_mask.clear()
+        ic.overlay_mask.addItem("None")
+        ic.overlay_mask.addItems(masks)
+        ic.overlay_mask.blockSignals(False)
 
         # Overlay column
-        ic._overlay_col.blockSignals(True)
-        ic._overlay_col.clear()
+        ic.overlay_col.blockSignals(True)
+        ic.overlay_col.clear()
         tables = dm.get_profiling_tables()
         for tname in tables:
             if tname in ("image", "metadata"):
                 continue
             cols = dm.get_profiling_columns(tname)
             for name, ctype, is_num in cols:
-                ic._overlay_col.addItem(f"{tname}/{name}", (tname, name))
-        ic._overlay_col.blockSignals(False)
+                ic.overlay_col.addItem(f"{tname}/{name}", (tname, name))
+        ic.overlay_col.blockSignals(False)
 
-        ic._overlay_cmap.blockSignals(True)
-        ic._overlay_cmap.clear()
-        ic._overlay_cmap.addItems(CMAP_OPTIONS)
-        ic._overlay_cmap.setCurrentText(DEFAULT_CMAP)
-        ic._overlay_cmap.blockSignals(False)
+        ic.overlay_cmap.blockSignals(True)
+        ic.overlay_cmap.clear()
+        ic.overlay_cmap.addItems(CMAP_OPTIONS)
+        ic.overlay_cmap.setCurrentText(DEFAULT_CMAP)
+        ic.overlay_cmap.blockSignals(False)
 
     def _populate_data_controls(self) -> None:
         if self._dm is None:
             return
         tables = self._dm.get_profiling_tables()
-        self._data_view._table_sel.blockSignals(True)
-        self._data_view._table_sel.clear()
-        self._data_view._table_sel.addItems(list(tables.keys()))
-        self._data_view._table_sel.blockSignals(False)
+        self._data_view.table_selector.blockSignals(True)
+        self._data_view.table_selector.clear()
+        self._data_view.table_selector.addItems(list(tables.keys()))
+        self._data_view.table_selector.blockSignals(False)
         if tables:
             self._on_data_table_changed(list(tables.keys())[0])
 
@@ -461,16 +461,16 @@ class MainWindow(QMainWindow):
         if self._dm is None:
             return
         gw = self._grid_controls
-        col_data = gw._column.currentData()
+        col_data = gw.column.currentData()
         col_val = col_data if col_data else (None, False)
         self._grid_canvas.update_grid(
             self._dm,
-            table_name=gw._table.currentText(),
+            table_name=gw.table.currentText(),
             col_val=col_val,
-            agg=gw._agg.currentText(),
-            cmap=gw._cmap.currentText(),
-            palette=gw._palette.currentText(),
-            fmt_name=gw._plate_fmt.currentText(),
+            agg=gw.aggregation.currentText(),
+            cmap=gw.colormap.currentText(),
+            palette=gw.palette.currentText(),
+            fmt_name=gw.plate_format.currentText(),
             selected_wells=self._selected_wells,
         )
 
@@ -505,11 +505,11 @@ class MainWindow(QMainWindow):
 
     def _on_overlay_changed(self) -> None:
         ic = self._image_controls
-        self._overlay_mask = ic._overlay_mask.currentText()
-        col_data = ic._overlay_col.currentData()
+        self._overlay_mask = ic.overlay_mask.currentText()
+        col_data = ic.overlay_col.currentData()
         self._overlay_col = col_data[1] if col_data else None
-        self._overlay_cmap = ic._overlay_cmap.currentText()
-        self._overlay_alpha = ic._overlay_alpha.value() / 100.0
+        self._overlay_cmap = ic.overlay_cmap.currentText()
+        self._overlay_alpha = ic.overlay_alpha.value() / 100.0
         self._schedule_image_refresh()
 
     def _schedule_image_refresh(self) -> None:
@@ -637,4 +637,6 @@ class MainWindow(QMainWindow):
     # ── Cleanup ──────────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
+        if self._dm is not None:
+            self._dm.close()
         super().closeEvent(event)

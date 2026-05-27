@@ -8,9 +8,9 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from refactoring.log_utils import get_logger
+from microVis.log_utils import get_logger
 
-_log = get_logger("refactoring.data_module")
+_log = get_logger("microVis.data_module")
 
 _EXCLUDE_TABLES = frozenset({"image", "metadata"})
 
@@ -37,6 +37,7 @@ class DataModule:
         self._db_conn: Optional[sqlite3.Connection] = None
         self._db_tables: dict[str, dict[str, str]] = {}
         self._metadata: Optional[pd.DataFrame] = None
+        self._img_dtype_cache: Optional[str] = None
         self._ready = False
 
         self._init_dataset()
@@ -98,12 +99,15 @@ class DataModule:
 
     @property
     def img_dtype(self) -> str:
+        if self._img_dtype_cache is not None:
+            return self._img_dtype_cache
         try:
             row = self._metadata.iloc[0]
             img, _ = self._dataset.get_imageset(row.name)
-            return str(img.dtype)
+            self._img_dtype_cache = str(img.dtype)
         except Exception:
-            return "uint16"
+            self._img_dtype_cache = "uint16"
+        return self._img_dtype_cache
 
     def get_wells(self) -> list[str]:
         return sorted(self._metadata["well"].unique())
@@ -149,7 +153,8 @@ class DataModule:
             return None
         try:
             return pd.read_sql(f'SELECT * FROM "{table}"', self._db_conn)
-        except Exception:
+        except Exception as e:
+            _log.warning("get_table_df(%s) failed: %s", table, e)
             return None
 
     def aggregate(self, table: str, column: str, method: str) -> dict:
@@ -221,6 +226,14 @@ class DataModule:
         masks: Optional[list[str]] = None,
     ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
         return self._dataset.get_imageset(row_idx, channels=channels, masks=masks)
+
+    # ── Cleanup ────────────────────────────────────────────────────
+
+    def close(self) -> None:
+        """Close the SQLite connection."""
+        if self._db_conn is not None:
+            self._db_conn.close()
+            self._db_conn = None
 
     # ── Display info ───────────────────────────────────────────────
 

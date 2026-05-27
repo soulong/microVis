@@ -7,8 +7,10 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.cm import ScalarMappable
 from matplotlib.figure import Figure
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
+from matplotlib.gridspec import GridSpec
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtGui import QCursor
+from PySide6.QtWidgets import QSizePolicy, QToolTip, QVBoxLayout, QWidget
 
 
 def _get_cmap(name: str):
@@ -28,21 +30,33 @@ class WellGridCanvas(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._figure = Figure(facecolor="#252536")
-        self._axes = self._figure.add_subplot(111)
-        self._axes.set_facecolor("#252536")
 
-        # Colorbar axes created once, never added/removed — avoids layout shifts
-        self._cbar_ax = self._figure.add_axes([0.88, 0.08, 0.025, 0.86])
+        # Pre-allocate BOTH axes once with a fixed GridSpec so their positions
+        # never change across redraws.  The colorbar axes is simply shown or
+        # hidden; it never steals space from the main axes (which is the root
+        # cause of the shrinking-grid bug when using figure.colorbar(ax=…)).
+        gs = GridSpec(
+            1, 2,
+            figure=self._figure,
+            width_ratios=[20, 1],
+            left=0.06, right=0.97,
+            top=0.90, bottom=0.03,
+            wspace=0.05,
+        )
+        self._axes = self._figure.add_subplot(gs[0, 0])
+        self._axes.set_facecolor("#252536")
+        self._cbar_ax = self._figure.add_subplot(gs[0, 1])
         self._cbar_ax.set_visible(False)
-        self._cbar_ax.set_in_layout(False)
-        self._colorbar = None
 
         self._canvas = FigureCanvasQTAgg(self._figure)
         self._canvas.mpl_connect("pick_event", self._on_pick)
+        self._canvas.mpl_connect("motion_notify_event", self._on_motion)
         self._canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._canvas.setStyleSheet("background-color: #252536;")
 
         self._well_indices: dict[str, int] = {}
+        self._data_map: dict[str, float | str] = {}
+        self._col_name: str | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -63,15 +77,16 @@ class WellGridCanvas(QWidget):
         import matplotlib.pyplot as plt
 
         self._axes.clear()
+        self._axes.set_facecolor("#252536")
+        # Clear the colorbar axes and hide it until we know we need it.
+        self._cbar_ax.clear()
+        self._cbar_ax.set_visible(False)
         self._well_indices.clear()
 
         rows, cols = dm.get_plate_dims()
         fmt_rows, fmt_cols = _get_format_dims(fmt_name)
         rows = max(rows, fmt_rows)
         cols = max(cols, fmt_cols)
-
-        ratio = cols / max(rows, 1)
-        self._figure.set_size_inches(max(4.5, 3.0 * ratio), 4.0)
 
         row_labels = _row_labels(rows)
         all_wells = dm.get_wells()
@@ -80,12 +95,15 @@ class WellGridCanvas(QWidget):
         # Compute data mapping via DataModule.aggregate()
         data_map: dict[str, float | str] = {}
         is_numeric = False
+        self._col_name = None
         if col_val and col_val[0] is not None and table_name:
             col_name, is_numeric = col_val
+            self._col_name = col_name
             try:
                 data_map = dm.aggregate(table_name, col_name, agg)
             except Exception:
                 data_map = {}
+        self._data_map = data_map
 
         marker_size = _compute_marker_size(rows, cols)
         x_vals, y_vals, color_list = [], [], []
@@ -163,46 +181,37 @@ class WellGridCanvas(QWidget):
                     [x_vals[idx]], [y_vals[idx]],
                     s=marker_size * 1.3,
                     facecolors="none",
-                    edgecolors="#4cc9f0",
+                    edgecolors="#5a8a9a",
                     linewidths=2,
                     zorder=4,
                 )
 
-        # Colorbar: reuse the pre-created axes, just show/hide
-        self._cbar_ax.clear()
-        if has_data and is_numeric and len(color_list) > 0:
-            sm = ScalarMappable(cmap=cmap_obj, norm=norm)
-            sm.set_array([])
-            self._colorbar = self._figure.colorbar(
-                sm, cax=self._cbar_ax, orientation="vertical",
-            )
-            self._cbar_ax.tick_params(colors="#888888", labelsize=7)
-            self._colorbar.outline.set_color("#333333")
-            self._cbar_ax.set_visible(True)
-        else:
-            self._colorbar = None
-            self._cbar_ax.set_visible(False)
-
         self._axes.set_xlim(0.5, cols + 0.5)
         self._axes.set_ylim(0.5, rows + 0.5)
         self._axes.set_xticks(range(1, cols + 1))
+        self._axes.set_xticklabels([str(c) for c in range(1, cols + 1)])
         self._axes.set_yticks(range(1, rows + 1))
         self._axes.set_yticklabels(row_labels)
         self._axes.tick_params(colors="#888888", labelsize=7)
         self._axes.invert_yaxis()
-        self._axes.set_aspect("equal")
+        self._axes.xaxis.set_ticks_position('top')
+        self._axes.xaxis.set_label_position('top')
         for spine in self._axes.spines.values():
             spine.set_color("#333333")
 
-        # Position main axes and colorbar to avoid overlap / shifting
         if has_data and is_numeric and len(color_list) > 0:
-            main_left, main_bottom, main_width = 0.06, 0.08, 0.80
-            cbar_left = main_left + main_width + 0.02
-            self._axes.set_position([main_left, main_bottom, main_width, 0.86])
-            self._cbar_ax.set_position([cbar_left, main_bottom, 0.025, 0.86])
-        else:
-            self._axes.set_position([0.06, 0.08, 0.88, 0.86])
-            self._cbar_ax.set_visible(False)
+            sm = ScalarMappable(cmap=cmap_obj, norm=norm)
+            sm.set_array([])
+            # Use cax= to draw into the pre-allocated colorbar axes.
+            # This is the key fix: figure.colorbar(ax=self._axes, …) internally
+            # calls ax.set_position() to shrink the main axes and make room —
+            # that shrinkage accumulates across redraws, causing the grid to
+            # drift left and compress.  With cax= the main axes is never touched.
+            self._figure.colorbar(sm, cax=self._cbar_ax)
+            self._cbar_ax.set_visible(True)
+            self._cbar_ax.tick_params(colors="#888888", labelsize=7)
+            for spine in self._cbar_ax.spines.values():
+                spine.set_color("#333333")
 
         self._canvas.draw()
 
@@ -212,8 +221,35 @@ class WellGridCanvas(QWidget):
             idx = ind[0]
             for well, i in self._well_indices.items():
                 if i == idx:
-                    self.well_clicked.emit(well)
+                    QTimer.singleShot(0, lambda w=well: self.well_clicked.emit(w))
                     return
+
+    def _on_motion(self, event) -> None:
+        if event.inaxes != self._axes:
+            QToolTip.hideText()
+            return
+        # Find nearest well
+        if event.xdata is None or event.ydata is None:
+            return
+        col = round(event.xdata)
+        row = round(event.ydata)
+        row_labels = _row_labels(int(self._axes.get_ylim()[1] - 0.5))
+        if 1 <= row <= len(row_labels) and 1 <= col:
+            well = f"{row_labels[row - 1]}{col}"
+            if well in self._data_map and self._col_name:
+                val = self._data_map[well]
+                if isinstance(val, float):
+                    text = f"{well}  {self._col_name}: {val:.4f}"
+                else:
+                    text = f"{well}  {self._col_name}: {val}"
+            elif well in self._well_indices:
+                text = well
+            else:
+                text = ""
+            if text:
+                QToolTip.showText(QCursor.pos(), text, self._canvas)
+            else:
+                QToolTip.hideText()
 
 
 def _row_labels(n: int) -> list[str]:

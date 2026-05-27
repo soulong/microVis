@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -30,7 +31,7 @@ class FolderSelector(QWidget):
         ilayout.setSpacing(12)
 
         title = QLabel("microVis")
-        title.setStyleSheet("font-size: 28pt; font-weight: bold; color: #4cc9f0;")
+        title.setStyleSheet("font-size: 28pt; font-weight: bold; color: #5a8a9a;")
         title.setAlignment(Qt.AlignCenter)
         ilayout.addWidget(title)
 
@@ -48,10 +49,10 @@ class FolderSelector(QWidget):
         self._path_input.setPlaceholderText("Path to measurement directory...")
         row.addWidget(self._path_input, stretch=1)
 
-        self._load_btn = QPushButton("Load")
-        self._load_btn.setProperty("class", "primary")
-        self._load_btn.clicked.connect(self._on_load)
-        row.addWidget(self._load_btn)
+        self._browse_btn = QPushButton("Browse")
+        self._browse_btn.setProperty("class", "primary")
+        self._browse_btn.clicked.connect(self._on_browse)
+        row.addWidget(self._browse_btn)
         ilayout.addLayout(row)
 
         self._error_label = QLabel("")
@@ -63,9 +64,10 @@ class FolderSelector(QWidget):
         ilayout.addStretch()
         layout.addWidget(inner)
 
-    def _on_load(self) -> None:
-        path = self._path_input.text().strip()
+    def _on_browse(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Dataset Directory")
         if path:
+            self._path_input.setText(path)
             self.load_requested.emit(path)
 
     def show_error(self, msg: str) -> None:

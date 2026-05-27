@@ -6,11 +6,9 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
     QSplitter,
     QStackedWidget,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +34,7 @@ from microVis.widgets.image_controls import ImageControls
 from microVis.widgets.image_display import ImageDisplay
 from microVis.widgets.pixel_info import PixelInfo
 from microVis.widgets.well_grid_canvas import WellGridCanvas
+from microVis.widgets._event_filter import RotatedLabel
 from microVis.widgets.well_grid_controls import WellGridControls
 
 
@@ -64,7 +63,7 @@ class MainWindow(QMainWindow):
         self._contrast_method: str = "none"
         self._contrast_gamma: float = 1.0
         self._invert: bool = False
-        self._overlay_mask: str = "None"
+        self._overlay_table: str | None = None
         self._overlay_col: str | None = None
         self._overlay_cmap: str = "Viridis"
         self._overlay_alpha: float = 0.4
@@ -88,64 +87,89 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header
-        header = QWidget()
-        header.setObjectName("header")
-        hlayout = QHBoxLayout(header)
-        hlayout.setContentsMargins(12, 6, 12, 6)
-        self._title_label = QLabel("microVis")
-        self._title_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #4cc9f0;")
-        self._path_label = QLabel("")
-        self._path_label.setProperty("class", "muted")
-        hlayout.addWidget(self._title_label)
-        hlayout.addWidget(self._path_label)
-        hlayout.addStretch()
+        root.addWidget(self._build_main_page(), stretch=1)
 
-        # Stack: folder selector → main content
-        self._stack = QStackedWidget()
-
-        self._folder_page = FolderSelector()
-        self._main_page = self._build_main_page()
-
-        self._stack.addWidget(self._folder_page)  # index 0
-        self._stack.addWidget(self._main_page)     # index 1
-        self._stack.setCurrentIndex(0)
-
-        root.addWidget(header)
-        root.addWidget(self._stack, stretch=1)
-
-        # Status bar
-        self.statusBar().showMessage("Ready")
+        # Status bar (hidden)
+        self.statusBar().setVisible(False)
 
     def _build_main_page(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        self._tabs = QTabWidget()
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
 
-        # Tab 0: Plate & Images
-        plate_tab = self._build_plate_images_tab()
-        self._tabs.addTab(plate_tab, "Plate && Images")
+        # ── Left nav sidebar ──
+        nav = QWidget()
+        nav.setObjectName("sidebar")
+        nav.setFixedWidth(32)
+        nav_layout = QVBoxLayout(nav)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(0)
 
-        # Tab 1: Data View
+        self._nav_load = RotatedLabel("Load")
+        self._nav_load.setProperty("class", "nav-tab")
+        self._nav_load.setProperty("active", "true")
+
+        self._nav_plate = RotatedLabel("Plate")
+        self._nav_plate.setProperty("class", "nav-tab")
+        self._nav_plate.setProperty("active", "false")
+
+        self._nav_data = RotatedLabel("Data")
+        self._nav_data.setProperty("class", "nav-tab")
+        self._nav_data.setProperty("active", "false")
+
+        nav_layout.addWidget(self._nav_load)
+        nav_layout.addWidget(self._nav_plate)
+        nav_layout.addWidget(self._nav_data)
+        nav_layout.addStretch()
+
+        # ── Stacked content ──
+        self._stack_content = QStackedWidget()
+
+        # Page 0: Load
+        self._folder_page = FolderSelector()
+        self._stack_content.addWidget(self._folder_page)
+
+        # Page 1: Plate & Images
+        self._stack_content.addWidget(self._build_plate_images_tab())
+
+        # Page 2: Data View
         self._data_view = DataView()
-        self._tabs.addTab(self._data_view, "Data View")
+        self._stack_content.addWidget(self._data_view)
 
-        layout.addWidget(self._tabs, stretch=1)
+        self._nav_load.clicked.connect(lambda: self._switch_tab(0))
+        self._nav_plate.clicked.connect(lambda: self._switch_tab(1))
+        self._nav_data.clicked.connect(lambda: self._switch_tab(2))
+
+        body.addWidget(nav)
+        body.addWidget(self._stack_content, stretch=1)
+
+        outer.addLayout(body, stretch=1)
 
         # Pixel info bar at bottom
         self._pixel_info = PixelInfo()
-        layout.addWidget(self._pixel_info)
+        outer.addWidget(self._pixel_info)
 
         return page
+
+    def _switch_tab(self, index: int) -> None:
+        self._stack_content.setCurrentIndex(index)
+        self._nav_load.setProperty("active", index == 0)
+        self._nav_plate.setProperty("active", index == 1)
+        self._nav_data.setProperty("active", index == 2)
+        for w in (self._nav_load, self._nav_plate, self._nav_data):
+            w.style().unpolish(w)
+            w.style().polish(w)
 
     def _build_plate_images_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
 
         # ── Top splitter: Well Grid ──
         top_splitter = QSplitter(Qt.Horizontal)
@@ -175,7 +199,7 @@ class MainWindow(QMainWindow):
         v_splitter = QSplitter(Qt.Vertical)
         v_splitter.addWidget(top_splitter)
         v_splitter.addWidget(bottom_splitter)
-        v_splitter.setSizes([300, 400])
+        v_splitter.setSizes([300, 700])
 
         layout.addWidget(v_splitter)
         return tab
@@ -189,7 +213,6 @@ class MainWindow(QMainWindow):
         # Well grid controls
         gw = self._grid_controls
         gw.plate_format.currentTextChanged.connect(self._on_grid_params_changed)
-        gw.table.currentTextChanged.connect(self._on_grid_table_changed)
         gw.column.currentTextChanged.connect(self._on_grid_params_changed)
         gw.aggregation.currentTextChanged.connect(self._on_grid_params_changed)
         gw.colormap.currentTextChanged.connect(self._on_grid_params_changed)
@@ -207,7 +230,6 @@ class MainWindow(QMainWindow):
         ic.contrast.currentTextChanged.connect(self._on_contrast_changed)
         ic.gamma_slider.valueChanged.connect(self._on_gamma_changed)
         ic.invert_button.toggled.connect(self._on_invert_toggled)
-        ic.overlay_mask.currentTextChanged.connect(self._on_overlay_changed)
         ic.overlay_col.currentTextChanged.connect(self._on_overlay_changed)
         ic.overlay_cmap.currentTextChanged.connect(self._on_overlay_changed)
         ic.overlay_alpha.valueChanged.connect(self._on_overlay_changed)
@@ -242,12 +264,11 @@ class MainWindow(QMainWindow):
             return
 
         self._dataset_dir = str(p)
-        self._path_label.setText(str(p))
         self._folder_page.clear_error()
 
-        # Init selection
+        # Init selection (no wells selected by default)
         all_wells = self._dm.get_wells()
-        self._selected_wells = set(all_wells)
+        self._selected_wells = set()
 
         # Init channel config
         self._init_channel_config()
@@ -257,8 +278,8 @@ class MainWindow(QMainWindow):
         self._populate_image_controls()
         self._populate_data_controls()
 
-        # Show main page
-        self._stack.setCurrentIndex(1)
+        # Switch to Plate tab
+        self._switch_tab(1)
 
         # Initial render
         self._update_grid()
@@ -280,12 +301,9 @@ class MainWindow(QMainWindow):
                 "vmax": 65535 if self._dm.img_dtype in ("uint16",) else 255,
             }
 
-    def _auto_range(self, ch_name: str | None = None) -> tuple[float, float]:
-        """Compute 1st–99th percentile range across a sample of images.
-
-        Args:
-            ch_name: If given, compute for a single channel. Otherwise across all pixels.
-        """
+    def _auto_range(self, low_pct: float = 1.0, high_pct: float = 99.0,
+                    ch_name: str | None = None) -> tuple[float, float]:
+        """Compute percentile range across a sample of images."""
         import numpy as np
         dm = self._dm
         wells = dm.get_wells()[:5]
@@ -293,14 +311,14 @@ class MainWindow(QMainWindow):
         stacks = dm.get_stacks()[:1]
         tps = dm.get_timepoints()[:1]
         rows = dm.lookup_row_indices(wells, fields, stacks, tps)
-        p1, p99 = 0.0, 65535.0
+        p_lo, p_hi = 0.0, 65535.0
         if not rows:
-            return p1, p99
+            return p_lo, p_hi
         try:
             if ch_name is not None:
                 ch_idx = dm.channels.index(ch_name) if ch_name in dm.channels else -1
                 if ch_idx < 0:
-                    return p1, p99
+                    return p_lo, p_hi
                 samples = []
                 for row_idx, _, _, _, _ in rows:
                     img_data, _ = dm.get_imageset(row_idx)
@@ -313,11 +331,11 @@ class MainWindow(QMainWindow):
                     img_data, _ = dm.get_imageset(row_idx)
                     samples.append(img_data.ravel())
                 all_pixels = np.concatenate(samples)
-            p1 = float(np.percentile(all_pixels, 1))
-            p99 = float(np.percentile(all_pixels, 99))
+            p_lo = float(np.percentile(all_pixels, low_pct))
+            p_hi = float(np.percentile(all_pixels, high_pct))
         except Exception:
             pass
-        return p1, p99
+        return p_lo, p_hi
 
     # ── Populate Controls ────────────────────────────────────────────────────
 
@@ -334,15 +352,7 @@ class MainWindow(QMainWindow):
             gw.plate_format.setCurrentIndex(idx)
         gw.plate_format.blockSignals(False)
 
-        # Tables
-        gw.table.blockSignals(True)
-        gw.table.clear()
-        tables = gm.get_profiling_tables()
-        gw.table.addItems(list(tables.keys()))
-        gw.table.blockSignals(False)
-
-        if tables:
-            self._update_grid_columns(list(tables.keys())[0])
+        self._update_grid_columns()
 
         gw.aggregation.blockSignals(True)
         gw.aggregation.clear()
@@ -361,16 +371,21 @@ class MainWindow(QMainWindow):
         gw.palette.setCurrentText("Set1")
         gw.palette.blockSignals(False)
 
-    def _update_grid_columns(self, table_name: str) -> None:
+    def _update_grid_columns(self) -> None:
         if self._dm is None:
             return
-        cols = self._dm.get_profiling_columns(table_name)
         gw = self._grid_controls
         gw.column.blockSignals(True)
         gw.column.clear()
-        for name, ctype, is_num in cols:
-            tag = "[num]" if is_num else "[cat]"
-            gw.column.addItem(f"{name} {tag}", (name, is_num))
+        gw.column.addItem("None")
+        tables = self._dm.get_profiling_tables()
+        for tname in tables:
+            if tname in ("image", "metadata"):
+                continue
+            cols = self._dm.get_profiling_columns(tname)
+            for name, ctype, is_num in cols:
+                tag = "[num]" if is_num else "[cat]"
+                gw.column.addItem(f"{tname}/{name} {tag}", (tname, name, is_num))
         gw.column.blockSignals(False)
 
     def _populate_image_controls(self) -> None:
@@ -390,17 +405,10 @@ class MainWindow(QMainWindow):
         # Channel controls
         ic.set_channels(self._ch_config)
 
-        # Overlay masks
-        masks = dm.mask_names or []
-        ic.overlay_mask.blockSignals(True)
-        ic.overlay_mask.clear()
-        ic.overlay_mask.addItem("None")
-        ic.overlay_mask.addItems(masks)
-        ic.overlay_mask.blockSignals(False)
-
         # Overlay column
         ic.overlay_col.blockSignals(True)
         ic.overlay_col.clear()
+        ic.overlay_col.addItem("None")
         tables = dm.get_profiling_tables()
         for tname in tables:
             if tname in ("image", "metadata"):
@@ -432,18 +440,15 @@ class MainWindow(QMainWindow):
     def _on_grid_params_changed(self) -> None:
         self._update_grid()
 
-    def _on_grid_table_changed(self, table_name: str) -> None:
-        if table_name:
-            self._update_grid_columns(table_name)
-        self._update_grid()
-
     def _on_well_clicked(self, well: str) -> None:
+        is_real = well in set(self._dm.get_wells())
         if well in self._selected_wells:
             self._selected_wells.discard(well)
         else:
             self._selected_wells.add(well)
         self._update_grid()
-        self._schedule_image_refresh()
+        if is_real:
+            self._schedule_image_refresh()
 
     def _on_select_all(self) -> None:
         if self._dm is None:
@@ -462,10 +467,15 @@ class MainWindow(QMainWindow):
             return
         gw = self._grid_controls
         col_data = gw.column.currentData()
-        col_val = col_data if col_data else (None, False)
+        if col_data and len(col_data) == 3:
+            table_name, col_name, is_num = col_data
+            col_val = (col_name, is_num)
+        else:
+            table_name = ""
+            col_val = (None, False)
         self._grid_canvas.update_grid(
             self._dm,
-            table_name=gw.table.currentText(),
+            table_name=table_name,
             col_val=col_val,
             agg=gw.aggregation.currentText(),
             cmap=gw.colormap.currentText(),
@@ -482,7 +492,10 @@ class MainWindow(QMainWindow):
     def _on_auto_all(self) -> None:
         if self._dm is None:
             return
-        p1, p99 = self._auto_range()
+        ic = self._image_controls
+        low_pct = ic.auto_low.value()
+        high_pct = ic.auto_high.value()
+        p1, p99 = self._auto_range(low_pct, high_pct)
         for ch, cfg in self._ch_config.items():
             if cfg.get("enabled", True):
                 cfg["vmin"] = p1
@@ -505,9 +518,11 @@ class MainWindow(QMainWindow):
 
     def _on_overlay_changed(self) -> None:
         ic = self._image_controls
-        self._overlay_mask = ic.overlay_mask.currentText()
         col_data = ic.overlay_col.currentData()
-        self._overlay_col = col_data[1] if col_data else None
+        if col_data and len(col_data) == 2:
+            self._overlay_table, self._overlay_col = col_data
+        else:
+            self._overlay_table, self._overlay_col = None, None
         self._overlay_cmap = ic.overlay_cmap.currentText()
         self._overlay_alpha = ic.overlay_alpha.value() / 100.0
         self._schedule_image_refresh()
@@ -524,11 +539,52 @@ class MainWindow(QMainWindow):
         tps = ic.get_selected_tps()
 
         if not fields or not stacks or not tps:
+            self._image_display.clear()
             return
 
         self._ch_config = ic.get_channel_config()
 
-        wells = sorted(self._selected_wells) if self._selected_wells else self._dm.get_wells()
+        if not self._selected_wells:
+            self._image_display.clear()
+            return
+        wells = sorted(self._selected_wells)
+
+        # Pre-compute overlay column values per well
+        overlay_values: dict[str, float | str] = {}
+        if self._overlay_col and self._overlay_table:
+            try:
+                overlay_values = self._dm.aggregate(
+                    self._overlay_table, self._overlay_col, "mean"
+                )
+            except Exception:
+                pass
+
+        # Pre-compute object counts per well and per-object values
+        object_counts: dict[str, int] = {}
+        object_table: str | None = None
+        for tname in self._dm.get_profiling_tables():
+            cols = [c for c, _, _ in self._dm.get_profiling_columns(tname)]
+            if "label" in cols and "well" in cols:
+                object_table = tname
+                try:
+                    df = self._dm.get_table_df(tname)
+                    if df is not None:
+                        object_counts = df.groupby("well")["label"].nunique().to_dict()
+                except Exception:
+                    pass
+                break
+
+        # Per-object value mapping: well → {label → value}
+        # Always try to get per-object values from the object table
+        per_object_values: dict[str, dict[int, float | str]] = {}
+        if object_table and self._overlay_col:
+            try:
+                odf = self._dm.get_table_df(object_table)
+                if odf is not None and "label" in odf.columns and self._overlay_col in odf.columns:
+                    for well, wdf in odf.groupby("well"):
+                        per_object_values[well] = dict(zip(wdf["label"].astype(int), wdf[self._overlay_col]))
+            except Exception:
+                pass
         fields_int = [int(f) for f in fields]
         stacks_int = [int(s) for s in stacks]
         tps_int = [int(t) for t in tps]
@@ -580,15 +636,21 @@ class MainWindow(QMainWindow):
                                       None, None)
 
                 polygons = None
-                if self._overlay_mask and self._overlay_mask != "None":
-                    # microProfiler strips "mask_" prefix from dict keys
-                    if self._overlay_mask in mask_dict:
-                        polygons = extract_polygons(mask_dict[self._overlay_mask])
+                first_mask = None
+                if self._overlay_col is not None and mask_dict:
+                    first_mask = next(iter(mask_dict.values()), None)
+                    if first_mask is not None:
+                        polygons = extract_polygons(first_mask)
 
                 results.append({
                     "rgb": np.ascontiguousarray(rgb),
                     "well": well, "field": field, "stack": stack, "tp": tp,
                     "polygons": polygons,
+                    "overlay_val": overlay_values.get(well),
+                    "overlay_col": self._overlay_col,
+                    "n_objects": object_counts.get(well),
+                    "mask": first_mask,
+                    "obj_values": per_object_values.get(well, {}),
                 })
 
                 # Keep UI responsive during long loads
@@ -602,7 +664,7 @@ class MainWindow(QMainWindow):
                 overlay_alpha=self._overlay_alpha,
                 overlay_cmap=self._overlay_cmap,
             )
-            self.statusBar().showMessage("Ready")
+            pass
 
     def _on_pixel_clicked(self, well: str, field: int, stack: int, tp: int, x: int, y: int) -> None:
         if self._dm is None:

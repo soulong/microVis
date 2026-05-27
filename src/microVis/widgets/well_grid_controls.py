@@ -43,13 +43,6 @@ class WellGridControls(QScrollArea):
 
         layout.addSpacing(6)
 
-        # Table
-        layout.addWidget(QLabel("Table"))
-        self._table = NoScrollComboBox()
-        layout.addWidget(self._table)
-
-        layout.addSpacing(6)
-
         # Column
         layout.addWidget(QLabel("Column"))
         self._column = NoScrollComboBox()
@@ -61,6 +54,21 @@ class WellGridControls(QScrollArea):
         layout.addWidget(QLabel("Aggregation"))
         self._agg = NoScrollComboBox()
         layout.addWidget(self._agg)
+
+        layout.addSpacing(6)
+
+        # Select All / Clear
+        btn_row = QHBoxLayout()
+        self._select_all_btn = QPushButton("Select All")
+        self._select_all_btn.setProperty("class", "secondary")
+        self._select_all_btn.clicked.connect(self.select_all_clicked)
+        btn_row.addWidget(self._select_all_btn)
+
+        self._clear_btn = QPushButton("Clear")
+        self._clear_btn.setProperty("class", "secondary")
+        self._clear_btn.clicked.connect(self.clear_clicked)
+        btn_row.addWidget(self._clear_btn)
+        layout.addLayout(btn_row)
 
         layout.addSpacing(6)
 
@@ -83,20 +91,6 @@ class WellGridControls(QScrollArea):
         sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet("background-color: #333333; max-height: 1px;")
         layout.addWidget(sep)
-        layout.addSpacing(4)
-
-        # Select All / Clear
-        btn_row = QHBoxLayout()
-        self._select_all_btn = QPushButton("Select All")
-        self._select_all_btn.setProperty("class", "secondary")
-        self._select_all_btn.clicked.connect(self.select_all_clicked)
-        btn_row.addWidget(self._select_all_btn)
-
-        self._clear_btn = QPushButton("Clear")
-        self._clear_btn.setProperty("class", "secondary")
-        self._clear_btn.clicked.connect(self.clear_clicked)
-        btn_row.addWidget(self._clear_btn)
-        layout.addLayout(btn_row)
 
         layout.addStretch()
 
@@ -107,10 +101,6 @@ class WellGridControls(QScrollArea):
     @property
     def plate_format(self) -> NoScrollComboBox:
         return self._plate_fmt
-
-    @property
-    def table(self) -> NoScrollComboBox:
-        return self._table
 
     @property
     def column(self) -> NoScrollComboBox:

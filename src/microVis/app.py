@@ -2,20 +2,33 @@
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QEvent, QObject
+from PySide6.QtCore import QEvent, QObject, QTimer
 from PySide6.QtGui import QColor, QIcon, QPalette
-from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox, QSlider
+from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox
 
 from microVis.log_utils import setup_logging
 
 
-class _GlobalScrollFilter(QObject):
-    """Event filter that blocks scroll-wheel on all input widgets app-wide."""
+class _WheelBlocker(QObject):
+    """Event filter that blocks scroll-wheel on unfocused input widgets.
 
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Wheel:
-            if isinstance(obj, (QAbstractSpinBox, QComboBox, QSlider)):
+    Uses hit-testing (widgetAt) + parent walk so the block works even when
+    the event targets a child widget (e.g. the QLineEdit inside a spinbox).
+    Only blocks when the widget does NOT already have keyboard focus — if
+    the user explicitly focused a spinbox, scrolling should still work.
+    """
+
+    def eventFilter(self, watched, event):
+        if event.type() != QEvent.Type.Wheel:
+            return False
+        pos = event.globalPosition().toPoint()
+        w = QApplication.instance().widgetAt(pos)
+        for _ in range(4):
+            if w is None:
+                break
+            if isinstance(w, (QAbstractSpinBox, QComboBox)) and not w.hasFocus():
                 return True
+            w = w.parentWidget()
         return False
 
 
@@ -30,8 +43,7 @@ def run_app(dataset_dir: str | None = None) -> None:
     app.setStyle("Fusion")
 
     # Block scroll-wheel on all input widgets app-wide
-    _scroll_filter = _GlobalScrollFilter(app)
-    app.installEventFilter(_scroll_filter)
+    app.installEventFilter(_WheelBlocker(app))
     app.setApplicationName("microVis")
     app.setOrganizationName("microVis")
     from microVis import __version__
@@ -56,8 +68,7 @@ def run_app(dataset_dir: str | None = None) -> None:
 
     icon_path = resources / "icon.png"
     if icon_path.exists():
-        icon = QIcon(str(icon_path))
-        app.setWindowIcon(icon)
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     qss_path = resources / "style.qss"
     if qss_path.exists():
@@ -65,8 +76,15 @@ def run_app(dataset_dir: str | None = None) -> None:
 
     from microVis.main_window import MainWindow
 
+    icon = QIcon(str(icon_path)) if icon_path.exists() else None
+
     window = MainWindow(dataset_dir=dataset_dir)
-    if icon_path.exists():
+    if icon:
         window.setWindowIcon(icon)
     window.show()
+
+    # Reinforce icon after window is fully rendered (fixes inconsistent taskbar icon on Windows)
+    if icon:
+        QTimer.singleShot(200, lambda: window.setWindowIcon(icon))
+
     sys.exit(app.exec())

@@ -3,6 +3,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
+    QCompleter,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -15,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from microVis._settings import CMAP_OPTIONS, CONTRAST_METHODS, DEFAULT_CMAP
 from microVis.widgets.channel_controls import ChannelControls
-from microVis.widgets._event_filter import NoScrollComboBox, NoScrollSlider
+from microVis.widgets._event_filter import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSlider
 
 
 class _MultiSelectCombo(QWidget):
@@ -23,7 +26,8 @@ class _MultiSelectCombo(QWidget):
 
     selection_changed = Signal()
 
-    def __init__(self, label: str, items: list[str], parent: QWidget | None = None):
+    def __init__(self, label: str, items: list[str], checked_first: bool = False,
+                 parent: QWidget | None = None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -36,13 +40,15 @@ class _MultiSelectCombo(QWidget):
 
         sel_all = QPushButton("All")
         sel_all.setProperty("class", "secondary")
-        sel_all.setFixedSize(64, 24)
+        sel_all.setFixedSize(42, 18)
+        sel_all.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
         sel_all.clicked.connect(lambda: self.set_all_checked(True))
         header.addWidget(sel_all)
 
         clear_btn = QPushButton("Clear")
         clear_btn.setProperty("class", "secondary")
-        clear_btn.setFixedSize(72, 24)
+        clear_btn.setFixedSize(48, 18)
+        clear_btn.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
         clear_btn.clicked.connect(lambda: self.set_all_checked(False))
         header.addWidget(clear_btn)
         header.addStretch()
@@ -53,9 +59,9 @@ class _MultiSelectCombo(QWidget):
         self._checks_layout.setSpacing(4)
         self._checks_layout.setContentsMargins(0, 0, 0, 0)
         self._checkboxes: dict[str, QCheckBox] = {}
-        for item_text in items:
+        for i, item_text in enumerate(items):
             cb = QCheckBox(item_text)
-            cb.setChecked(True)
+            cb.setChecked(i == 0 if checked_first else True)
             cb.toggled.connect(lambda: self.selection_changed.emit())
             self._checks_layout.addWidget(cb)
             self._checkboxes[item_text] = cb
@@ -87,6 +93,16 @@ class ImageControls(QScrollArea):
         self.setMaximumWidth(320)
 
         container = QWidget()
+        container.setStyleSheet("""
+            QComboBox, QDoubleSpinBox, QSlider {
+                min-height: 20px;
+                max-height: 24px;
+                font-size: 9pt;
+            }
+            QLabel {
+                font-size: 9pt;
+            }
+        """)
         self._layout = QVBoxLayout(container)
         self._layout.setContentsMargins(8, 8, 8, 8)
         self._layout.setSpacing(4)
@@ -102,7 +118,6 @@ class ImageControls(QScrollArea):
         self._layout.addSpacing(6)
 
         # ── Channel Controls ──
-        self._section("Channel Controls")
         self._ch_layout = QVBoxLayout()
         self._ch_layout.setSpacing(2)
         self._layout.addLayout(self._ch_layout)
@@ -110,6 +125,24 @@ class ImageControls(QScrollArea):
         self._layout.addSpacing(6)
 
         # ── Global Adjustments ──
+        auto_row = QHBoxLayout()
+        auto_row.setSpacing(4)
+        auto_row.addWidget(QLabel("Low"))
+        self._auto_low = NoScrollDoubleSpinBox()
+        self._auto_low.setRange(0.0, 100.0)
+        self._auto_low.setValue(0.01)
+        self._auto_low.setDecimals(2)
+        self._auto_low.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        auto_row.addWidget(self._auto_low)
+        auto_row.addWidget(QLabel("High"))
+        self._auto_high = NoScrollDoubleSpinBox()
+        self._auto_high.setRange(0.0, 100.0)
+        self._auto_high.setValue(99.99)
+        self._auto_high.setDecimals(2)
+        self._auto_high.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        auto_row.addWidget(self._auto_high)
+        self._layout.addLayout(auto_row)
+
         self._auto_all_btn = QPushButton("Auto All")
         self._auto_all_btn.setProperty("class", "secondary")
         self._auto_all_btn.clicked.connect(self.auto_all_clicked)
@@ -150,12 +183,13 @@ class ImageControls(QScrollArea):
         # ── Object Overlay ──
         self._section("Object Overlay")
 
-        self._layout.addWidget(QLabel("Mask"))
-        self._overlay_mask = NoScrollComboBox()
-        self._layout.addWidget(self._overlay_mask)
-
         self._layout.addWidget(QLabel("Map Column"))
         self._overlay_col = NoScrollComboBox()
+        self._overlay_col.setEditable(True)
+        self._overlay_col.setInsertPolicy(QComboBox.NoInsert)
+        self._overlay_col.completer().setFilterMode(Qt.MatchContains)
+        self._overlay_col.completer().setCompletionMode(QCompleter.PopupCompletion)
+        self._overlay_col.lineEdit().setPlaceholderText("Type to filter...")
         self._layout.addWidget(self._overlay_col)
 
         self._layout.addWidget(QLabel("Colors"))
@@ -173,7 +207,7 @@ class ImageControls(QScrollArea):
 
     def _section(self, title: str) -> None:
         lbl = QLabel(title)
-        lbl.setStyleSheet("font-weight: bold; color: #4cc9f0; padding-top: 4px;")
+        lbl.setStyleSheet("font-weight: bold; color: #5a8a9a; padding-top: 4px;")
         self._layout.addWidget(lbl)
 
     def set_filter_options(self, fields: list[str], stacks: list[str], tps: list[str]) -> None:
@@ -185,9 +219,9 @@ class ImageControls(QScrollArea):
             if item.widget():
                 item.widget().deleteLater()
 
-        self._fields_widget = _MultiSelectCombo("Fields", fields)
-        self._stacks_widget = _MultiSelectCombo("Stacks", stacks)
-        self._tps_widget = _MultiSelectCombo("Timepoints", tps)
+        self._fields_widget = _MultiSelectCombo("Fields", fields, checked_first=True)
+        self._stacks_widget = _MultiSelectCombo("Stacks", stacks, checked_first=True)
+        self._tps_widget = _MultiSelectCombo("Timepoints", tps, checked_first=True)
 
         self._filter_container.addWidget(self._fields_widget)
         self._filter_container.addWidget(self._stacks_widget)
@@ -249,8 +283,12 @@ class ImageControls(QScrollArea):
         return self._invert_btn
 
     @property
-    def overlay_mask(self) -> NoScrollComboBox:
-        return self._overlay_mask
+    def auto_low(self) -> NoScrollDoubleSpinBox:
+        return self._auto_low
+
+    @property
+    def auto_high(self) -> NoScrollDoubleSpinBox:
+        return self._auto_high
 
     @property
     def overlay_col(self) -> NoScrollComboBox:

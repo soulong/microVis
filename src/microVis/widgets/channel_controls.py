@@ -15,7 +15,7 @@ from microVis.widgets._event_filter import NoScrollComboBox, NoScrollDoubleSpinB
 
 
 class ChannelControls(QWidget):
-    """Per-channel control block: toggle + color, then vmin/vmax below."""
+    """Per-channel control block: checkbox + color on row 1, vmin/vmax on row 2."""
 
     config_changed = Signal(str)
 
@@ -24,12 +24,12 @@ class ChannelControls(QWidget):
         self._ch_name = ch_name
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 4, 0, 4)
-        root.setSpacing(2)
+        root.setContentsMargins(0, 2, 0, 2)
+        root.setSpacing(1)
 
-        # ── Top row: checkbox + color dropdown ──
+        # Row 1: checkbox + color
         top = QHBoxLayout()
-        top.setSpacing(6)
+        top.setSpacing(4)
 
         self._toggle = QCheckBox(ch_name)
         self._toggle.setChecked(cfg.get("enabled", True))
@@ -49,13 +49,11 @@ class ChannelControls(QWidget):
                 self._color.setCurrentIndex(i)
                 break
         self._color.currentTextChanged.connect(lambda: self.config_changed.emit(self._ch_name))
-        self._color.setFixedWidth(80)
-        top.addWidget(self._color)
-
+        top.addWidget(self._color, stretch=1)
         top.addStretch()
         root.addLayout(top)
 
-        # ── Bottom row: vmin / vmax (indented) ──
+        # Row 2: vmin / vmax
         bottom = QHBoxLayout()
         bottom.setSpacing(4)
         bottom.setContentsMargins(20, 0, 0, 0)
@@ -67,9 +65,8 @@ class ChannelControls(QWidget):
         self._vmin.setValue(cfg.get("vmin", 0))
         self._vmin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self._vmin.valueChanged.connect(lambda: self.config_changed.emit(self._ch_name))
-        self._vmin.setFixedWidth(70)
         self._vmin.setContextMenuPolicy(Qt.NoContextMenu)
-        bottom.addWidget(self._vmin)
+        bottom.addWidget(self._vmin, stretch=1)
 
         bottom.addWidget(QLabel("vmax"))
         self._vmax = NoScrollDoubleSpinBox()
@@ -78,11 +75,9 @@ class ChannelControls(QWidget):
         self._vmax.setValue(cfg.get("vmax", 65535))
         self._vmax.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self._vmax.valueChanged.connect(lambda: self.config_changed.emit(self._ch_name))
-        self._vmax.setFixedWidth(70)
         self._vmax.setContextMenuPolicy(Qt.NoContextMenu)
-        bottom.addWidget(self._vmax)
+        bottom.addWidget(self._vmax, stretch=1)
 
-        bottom.addStretch()
         root.addLayout(bottom)
 
     def get_config(self) -> dict:

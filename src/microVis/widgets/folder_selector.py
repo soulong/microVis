@@ -5,7 +5,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -13,7 +12,7 @@ from PySide6.QtWidgets import (
 
 
 class FolderSelector(QWidget):
-    """Landing page with directory path input and Load button."""
+    """Landing page with Browse button and path display."""
 
     load_requested = Signal(str)
 
@@ -43,17 +42,22 @@ class FolderSelector(QWidget):
 
         ilayout.addSpacing(12)
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self._path_input = QLineEdit()
-        self._path_input.setPlaceholderText("Path to measurement directory...")
-        row.addWidget(self._path_input, stretch=1)
-
+        # Browse button (centered)
+        browse_row = QHBoxLayout()
+        browse_row.addStretch()
         self._browse_btn = QPushButton("Browse")
         self._browse_btn.setProperty("class", "primary")
         self._browse_btn.clicked.connect(self._on_browse)
-        row.addWidget(self._browse_btn)
-        ilayout.addLayout(row)
+        browse_row.addWidget(self._browse_btn)
+        browse_row.addStretch()
+        ilayout.addLayout(browse_row)
+
+        # Path label (centered, below button)
+        self._path_label = QLabel("")
+        self._path_label.setProperty("class", "muted")
+        self._path_label.setAlignment(Qt.AlignCenter)
+        self._path_label.setWordWrap(True)
+        ilayout.addWidget(self._path_label)
 
         self._error_label = QLabel("")
         self._error_label.setProperty("class", "error")
@@ -67,7 +71,7 @@ class FolderSelector(QWidget):
     def _on_browse(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Dataset Directory")
         if path:
-            self._path_input.setText(path)
+            self._path_label.setText(path)
             self.load_requested.emit(path)
 
     def show_error(self, msg: str) -> None:

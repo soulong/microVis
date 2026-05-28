@@ -42,6 +42,7 @@ class _ThumbnailView(QGraphicsView):
         n_objects: int | None = None,
         mask: np.ndarray | None = None,
         obj_values: dict | None = None,
+        thumb_size: int = 210,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -66,7 +67,7 @@ class _ThumbnailView(QGraphicsView):
         self.setScene(self._scene)
 
         # Configure view
-        self.setFixedSize(210, 210)
+        self.setFixedSize(thumb_size, thumb_size)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setStyleSheet("background-color: #1e1e2e; border: 1px solid #333333;")
@@ -199,6 +200,7 @@ class ImageDisplay(QScrollArea):
         results: list,
         overlay_alpha: float = 0.4,
         overlay_cmap: str = "Viridis",
+        thumb_size: int = 210,
     ) -> None:
         self._clear_layout()
 
@@ -239,6 +241,7 @@ class ImageDisplay(QScrollArea):
                     r.get("n_objects"),
                     r.get("mask"),
                     r.get("obj_values"),
+                    thumb_size,
                 )
                 thumb.pixel_clicked.connect(self.pixel_clicked)
                 col.addWidget(thumb)

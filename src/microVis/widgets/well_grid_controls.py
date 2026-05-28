@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
+    QCompleter,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -28,69 +30,78 @@ class WellGridControls(QScrollArea):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setMinimumWidth(240)
-        self.setMaximumWidth(320)
+        self.setMinimumWidth(200)
+        self.setMaximumWidth(260)
 
         container = QWidget()
+        container.setStyleSheet("""
+            QComboBox, QDoubleSpinBox, QSlider {
+                min-height: 18px;
+                max-height: 22px;
+                font-size: 8pt;
+            }
+            QLabel {
+                font-size: 8pt;
+            }
+            QPushButton {
+                font-size: 8pt;
+                padding: 1px 4px;
+            }
+        """)
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(3)
 
-        # Plate format
-        layout.addWidget(QLabel("Format"))
+        def _row(label_text, widget):
+            r = QHBoxLayout()
+            r.setSpacing(4)
+            lbl = QLabel(label_text)
+            lbl.setFixedWidth(52)
+            r.addWidget(lbl)
+            r.addWidget(widget, stretch=1)
+            layout.addLayout(r)
+
+        # Format
         self._plate_fmt = NoScrollComboBox()
-        layout.addWidget(self._plate_fmt)
+        _row("Format", self._plate_fmt)
 
-        layout.addSpacing(6)
-
-        # Column
-        layout.addWidget(QLabel("Column"))
+        # Color by
         self._column = NoScrollComboBox()
-        layout.addWidget(self._column)
-
-        layout.addSpacing(6)
+        self._column.setEditable(True)
+        self._column.setInsertPolicy(QComboBox.NoInsert)
+        self._column.completer().setFilterMode(Qt.MatchContains)
+        self._column.completer().setCompletionMode(QCompleter.PopupCompletion)
+        self._column.lineEdit().setPlaceholderText("Type to filter...")
+        _row("Color by", self._column)
 
         # Aggregation
-        layout.addWidget(QLabel("Aggregation"))
         self._agg = NoScrollComboBox()
-        layout.addWidget(self._agg)
+        _row("Agg", self._agg)
 
-        layout.addSpacing(6)
-
-        # Select All / Clear
+        # Select All / Clear (centered)
         btn_row = QHBoxLayout()
-        self._select_all_btn = QPushButton("Select All")
+        btn_row.setSpacing(8)
+        btn_row.addStretch()
+        self._select_all_btn = QPushButton("All")
         self._select_all_btn.setProperty("class", "secondary")
+        self._select_all_btn.setFixedSize(48, 18)
         self._select_all_btn.clicked.connect(self.select_all_clicked)
         btn_row.addWidget(self._select_all_btn)
-
         self._clear_btn = QPushButton("Clear")
         self._clear_btn.setProperty("class", "secondary")
+        self._clear_btn.setFixedSize(48, 18)
         self._clear_btn.clicked.connect(self.clear_clicked)
         btn_row.addWidget(self._clear_btn)
+        btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        layout.addSpacing(6)
-
-        # Colors (continuous)
-        layout.addWidget(QLabel("Colors"))
+        # Colors
         self._cmap = NoScrollComboBox()
-        layout.addWidget(self._cmap)
+        _row("Colors", self._cmap)
 
-        layout.addSpacing(6)
-
-        # Palette (categorical)
-        layout.addWidget(QLabel("Palette"))
+        # Palette
         self._palette = NoScrollComboBox()
-        layout.addWidget(self._palette)
-
-        layout.addSpacing(8)
-
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("background-color: #333333; max-height: 1px;")
-        layout.addWidget(sep)
+        _row("Palette", self._palette)
 
         layout.addStretch()
 

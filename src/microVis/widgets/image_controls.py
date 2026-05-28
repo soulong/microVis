@@ -83,29 +83,36 @@ class ImageControls(QScrollArea):
     """Left sidebar controls for the image viewer."""
 
     auto_all_clicked = Signal()
+    auto_range_changed = Signal()
+    image_size_changed = Signal()
     channel_config_changed = Signal()
+    reset_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setMinimumWidth(240)
-        self.setMaximumWidth(320)
+        self.setMinimumWidth(200)
+        self.setMaximumWidth(260)
 
         container = QWidget()
         container.setStyleSheet("""
             QComboBox, QDoubleSpinBox, QSlider {
-                min-height: 20px;
-                max-height: 24px;
-                font-size: 9pt;
+                min-height: 18px;
+                max-height: 22px;
+                font-size: 8pt;
             }
             QLabel {
-                font-size: 9pt;
+                font-size: 8pt;
+            }
+            QPushButton {
+                font-size: 8pt;
+                padding: 1px 4px;
             }
         """)
         self._layout = QVBoxLayout(container)
-        self._layout.setContentsMargins(8, 8, 8, 8)
-        self._layout.setSpacing(4)
+        self._layout.setContentsMargins(6, 6, 6, 6)
+        self._layout.setSpacing(3)
 
         # ── Image Filters ──
         self._section("Image Filters")
@@ -118,6 +125,7 @@ class ImageControls(QScrollArea):
         self._layout.addSpacing(6)
 
         # ── Channel Controls ──
+        self._section("Channel Setting")
         self._ch_layout = QVBoxLayout()
         self._ch_layout.setSpacing(2)
         self._layout.addLayout(self._ch_layout)
@@ -125,40 +133,79 @@ class ImageControls(QScrollArea):
         self._layout.addSpacing(6)
 
         # ── Global Adjustments ──
-        auto_row = QHBoxLayout()
-        auto_row.setSpacing(4)
-        auto_row.addWidget(QLabel("Low"))
+        def _row(label_text, widget):
+            r = QHBoxLayout()
+            r.setSpacing(4)
+            lbl = QLabel(label_text)
+            lbl.setFixedWidth(52)
+            r.addWidget(lbl)
+            r.addWidget(widget, stretch=1)
+            self._layout.addLayout(r)
+
+        # Low / High
+        lowhigh_row = QHBoxLayout()
+        lowhigh_row.setSpacing(4)
+        lbl_lo = QLabel("Low")
+        lbl_lo.setFixedWidth(28)
+        lowhigh_row.addWidget(lbl_lo)
         self._auto_low = NoScrollDoubleSpinBox()
         self._auto_low.setRange(0.0, 100.0)
         self._auto_low.setValue(0.01)
         self._auto_low.setDecimals(2)
         self._auto_low.setButtonSymbols(QDoubleSpinBox.NoButtons)
-        auto_row.addWidget(self._auto_low)
-        auto_row.addWidget(QLabel("High"))
+        lowhigh_row.addWidget(self._auto_low)
+        lbl_hi = QLabel("High")
+        lbl_hi.setFixedWidth(28)
+        lowhigh_row.addWidget(lbl_hi)
         self._auto_high = NoScrollDoubleSpinBox()
         self._auto_high.setRange(0.0, 100.0)
         self._auto_high.setValue(99.99)
         self._auto_high.setDecimals(2)
         self._auto_high.setButtonSymbols(QDoubleSpinBox.NoButtons)
-        auto_row.addWidget(self._auto_high)
-        self._layout.addLayout(auto_row)
+        lowhigh_row.addWidget(self._auto_high)
+        self._layout.addLayout(lowhigh_row)
 
-        self._auto_all_btn = QPushButton("Auto All")
+        self._auto_low.valueChanged.connect(lambda: self.auto_range_changed.emit())
+        self._auto_high.valueChanged.connect(lambda: self.auto_range_changed.emit())
+
+        # Auto / Reset (centered)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch()
+        self._auto_all_btn = QPushButton("Auto")
         self._auto_all_btn.setProperty("class", "secondary")
+        self._auto_all_btn.setFixedHeight(18)
+        self._auto_all_btn.setFixedWidth(48)
         self._auto_all_btn.clicked.connect(self.auto_all_clicked)
-        self._layout.addWidget(self._auto_all_btn)
+        btn_row.addWidget(self._auto_all_btn)
+        self._reset_btn = QPushButton("Reset")
+        self._reset_btn.setProperty("class", "secondary")
+        self._reset_btn.setFixedHeight(18)
+        self._reset_btn.setFixedWidth(48)
+        self._reset_btn.clicked.connect(self.reset_requested)
+        btn_row.addWidget(self._reset_btn)
+        btn_row.addStretch()
+        self._layout.addLayout(btn_row)
 
-        self._layout.addSpacing(4)
+        # Image size
+        self._image_size = NoScrollDoubleSpinBox()
+        self._image_size.setRange(50, 500)
+        self._image_size.setValue(250)
+        self._image_size.setDecimals(0)
+        self._image_size.setSingleStep(10)
+        self._image_size.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self._image_size.valueChanged.connect(lambda: self.image_size_changed.emit())
+        _row("Img size", self._image_size)
 
-        cl = QHBoxLayout()
-        cl.addWidget(QLabel("Contrast"))
+        # Contrast
         self._contrast = NoScrollComboBox()
         self._contrast.addItems(CONTRAST_METHODS)
-        cl.addWidget(self._contrast, stretch=1)
-        self._layout.addLayout(cl)
+        _row("Transform", self._contrast)
 
         self._gamma_slider = NoScrollSlider(Qt.Horizontal)
         self._gamma_slider.setRange(10, 300)
+        self._gamma_slider.setSingleStep(10)
+        self._gamma_slider.setPageStep(10)
         self._gamma_slider.setValue(100)
         self._gamma_slider.setVisible(False)
         self._gamma_slider_label = QLabel("Gamma: 1.00")
@@ -170,44 +217,31 @@ class ImageControls(QScrollArea):
         self._layout.addWidget(self._gamma_slider_label)
         self._layout.addWidget(self._gamma_slider)
 
-        self._layout.addSpacing(4)
-
-        self._invert_btn = QPushButton("Invert")
-        self._invert_btn.setCheckable(True)
-        self._invert_btn.setChecked(False)
-        self._invert_btn.setProperty("class", "secondary")
-        self._layout.addWidget(self._invert_btn)
-
-        self._layout.addSpacing(6)
-
         # ── Object Overlay ──
         self._section("Object Overlay")
 
-        self._layout.addWidget(QLabel("Map Column"))
         self._overlay_col = NoScrollComboBox()
         self._overlay_col.setEditable(True)
         self._overlay_col.setInsertPolicy(QComboBox.NoInsert)
         self._overlay_col.completer().setFilterMode(Qt.MatchContains)
         self._overlay_col.completer().setCompletionMode(QCompleter.PopupCompletion)
         self._overlay_col.lineEdit().setPlaceholderText("Type to filter...")
-        self._layout.addWidget(self._overlay_col)
+        _row("Color by", self._overlay_col)
 
-        self._layout.addWidget(QLabel("Colors"))
         self._overlay_cmap = NoScrollComboBox()
-        self._layout.addWidget(self._overlay_cmap)
+        _row("Colors", self._overlay_cmap)
 
-        self._layout.addWidget(QLabel("Alpha"))
         self._overlay_alpha = NoScrollSlider(Qt.Horizontal)
         self._overlay_alpha.setRange(0, 100)
         self._overlay_alpha.setValue(40)
-        self._layout.addWidget(self._overlay_alpha)
+        _row("Alpha", self._overlay_alpha)
 
         self._layout.addStretch()
         self.setWidget(container)
 
     def _section(self, title: str) -> None:
         lbl = QLabel(title)
-        lbl.setStyleSheet("font-weight: bold; color: #5a8a9a; padding-top: 4px;")
+        lbl.setStyleSheet("font-weight: bold; color: #5a8a9a; font-size: 8pt; padding-top: 2px;")
         self._layout.addWidget(lbl)
 
     def set_filter_options(self, fields: list[str], stacks: list[str], tps: list[str]) -> None:
@@ -279,16 +313,16 @@ class ImageControls(QScrollArea):
         return self._gamma_slider
 
     @property
-    def invert_button(self) -> QPushButton:
-        return self._invert_btn
-
-    @property
     def auto_low(self) -> NoScrollDoubleSpinBox:
         return self._auto_low
 
     @property
     def auto_high(self) -> NoScrollDoubleSpinBox:
         return self._auto_high
+
+    @property
+    def image_size(self) -> NoScrollDoubleSpinBox:
+        return self._image_size
 
     @property
     def overlay_col(self) -> NoScrollComboBox:

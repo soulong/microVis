@@ -181,7 +181,7 @@ class MainWindow(QMainWindow):
         top_splitter.addWidget(self._grid_canvas)
         top_splitter.setStretchFactor(0, 0)
         top_splitter.setStretchFactor(1, 1)
-        top_splitter.setSizes([260, 600])
+        top_splitter.setSizes([220, 600])
 
         # ── Bottom splitter: Image View ──
         bottom_splitter = QSplitter(Qt.Horizontal)
@@ -193,7 +193,7 @@ class MainWindow(QMainWindow):
         bottom_splitter.addWidget(self._image_display)
         bottom_splitter.setStretchFactor(0, 0)
         bottom_splitter.setStretchFactor(1, 1)
-        bottom_splitter.setSizes([260, 600])
+        bottom_splitter.setSizes([220, 600])
 
         # ── Vertical splitter between grid and image sections ──
         v_splitter = QSplitter(Qt.Vertical)
@@ -214,6 +214,7 @@ class MainWindow(QMainWindow):
         gw = self._grid_controls
         gw.plate_format.currentTextChanged.connect(self._on_grid_params_changed)
         gw.column.currentTextChanged.connect(self._on_grid_params_changed)
+        gw.column.completer().activated.connect(self._on_grid_params_changed)
         gw.aggregation.currentTextChanged.connect(self._on_grid_params_changed)
         gw.colormap.currentTextChanged.connect(self._on_grid_params_changed)
         gw.palette.currentTextChanged.connect(self._on_grid_params_changed)
@@ -226,11 +227,14 @@ class MainWindow(QMainWindow):
         # Image controls (filter widget signals connected in _populate_image_controls)
         ic = self._image_controls
         ic.auto_all_clicked.connect(self._on_auto_all)
+        ic.auto_range_changed.connect(self._on_auto_all)
+        ic.reset_requested.connect(self._on_reset)
+        ic.image_size_changed.connect(self._schedule_image_refresh)
         ic.channel_config_changed.connect(self._schedule_image_refresh)
         ic.contrast.currentTextChanged.connect(self._on_contrast_changed)
         ic.gamma_slider.valueChanged.connect(self._on_gamma_changed)
-        ic.invert_button.toggled.connect(self._on_invert_toggled)
         ic.overlay_col.currentTextChanged.connect(self._on_overlay_changed)
+        ic.overlay_col.completer().activated.connect(self._on_overlay_changed)
         ic.overlay_cmap.currentTextChanged.connect(self._on_overlay_changed)
         ic.overlay_alpha.valueChanged.connect(self._on_overlay_changed)
 
@@ -265,6 +269,14 @@ class MainWindow(QMainWindow):
 
         self._dataset_dir = str(p)
         self._folder_page.clear_error()
+
+        # Reset UI state for new dataset
+        self._image_display.clear()
+        self._grid_canvas.update_grid(
+            self._dm, table_name="", col_val=(None, False), agg="mean",
+            cmap="viridis", palette="Set1", fmt_name=DEFAULT_PLATE,
+            selected_wells=set(),
+        )
 
         # Init selection (no wells selected by default)
         all_wells = self._dm.get_wells()
@@ -426,6 +438,8 @@ class MainWindow(QMainWindow):
 
     def _populate_data_controls(self) -> None:
         if self._dm is None:
+            self._data_view.table_selector.clear()
+            self._data_view.clear_table()
             return
         tables = self._dm.get_profiling_tables()
         self._data_view.table_selector.blockSignals(True)
@@ -434,6 +448,8 @@ class MainWindow(QMainWindow):
         self._data_view.table_selector.blockSignals(False)
         if tables:
             self._on_data_table_changed(list(tables.keys())[0])
+        else:
+            self._data_view.clear_table()
 
     # ── Grid Handlers ────────────────────────────────────────────────────────
 
@@ -503,17 +519,31 @@ class MainWindow(QMainWindow):
         self._image_controls.update_channel_values(self._ch_config)
         self._schedule_image_refresh()
 
+    def _on_reset(self) -> None:
+        if self._dm is None:
+            return
+        ic = self._image_controls
+        # Reset Low/High to defaults
+        ic.auto_low.blockSignals(True)
+        ic.auto_high.blockSignals(True)
+        ic.auto_low.setValue(0.01)
+        ic.auto_high.setValue(99.99)
+        ic.auto_low.blockSignals(False)
+        ic.auto_high.blockSignals(False)
+        # Re-init channel config to defaults
+        self._init_channel_config()
+        ic.set_channels(self._ch_config)
+        ic.channel_config_changed.connect(self._schedule_image_refresh)
+        self._schedule_image_refresh()
+
     def _on_contrast_changed(self, method: str) -> None:
         self._contrast_method = method
+        self._invert = (method == "invert")
         self._image_controls.set_gamma_visible(method == "gamma")
         self._schedule_image_refresh()
 
     def _on_gamma_changed(self, value: int) -> None:
         self._contrast_gamma = value / 100.0  # slider 10–300 → 0.1–3.0
-        self._schedule_image_refresh()
-
-    def _on_invert_toggled(self, checked: bool) -> None:
-        self._invert = checked
         self._schedule_image_refresh()
 
     def _on_overlay_changed(self) -> None:
@@ -637,7 +667,7 @@ class MainWindow(QMainWindow):
 
                 polygons = None
                 first_mask = None
-                if self._overlay_col is not None and mask_dict:
+                if self._overlay_col is not None and self._overlay_table is not None and mask_dict:
                     first_mask = next(iter(mask_dict.values()), None)
                     if first_mask is not None:
                         polygons = extract_polygons(first_mask)
@@ -659,10 +689,12 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Error: [{well} f{field}] {e}")
 
         if results:
+            thumb_size = int(self._image_controls.image_size.value())
             self._image_display.show_results(
                 results,
                 overlay_alpha=self._overlay_alpha,
                 overlay_cmap=self._overlay_cmap,
+                thumb_size=thumb_size,
             )
             pass
 

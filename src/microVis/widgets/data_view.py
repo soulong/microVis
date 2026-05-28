@@ -93,6 +93,9 @@ class DataView(QWidget):
         self._model.setDataFrame(df)
         self._table_view.resizeColumnsToContents()
 
+    def clear_table(self) -> None:
+        self._model.setDataFrame(pd.DataFrame())
+
     @property
     def table_selector(self) -> QComboBox:
         return self._table_sel

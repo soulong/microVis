@@ -44,8 +44,8 @@ class WellGridControls(QScrollArea):
                 font-size: 8pt;
             }
             QPushButton {
-                font-size: 8pt;
-                padding: 1px 4px;
+                font-size: 9pt;
+                padding: 2px 6px;
             }
         """)
         layout = QVBoxLayout(container)
@@ -82,14 +82,14 @@ class WellGridControls(QScrollArea):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
         btn_row.addStretch()
-        self._select_all_btn = QPushButton("All")
+        self._select_all_btn = QPushButton("Select All")
         self._select_all_btn.setProperty("class", "secondary")
-        self._select_all_btn.setFixedSize(48, 18)
+        self._select_all_btn.setFixedSize(80, 24)
         self._select_all_btn.clicked.connect(self.select_all_clicked)
         btn_row.addWidget(self._select_all_btn)
         self._clear_btn = QPushButton("Clear")
         self._clear_btn.setProperty("class", "secondary")
-        self._clear_btn.setFixedSize(48, 18)
+        self._clear_btn.setFixedSize(64, 24)
         self._clear_btn.clicked.connect(self.clear_clicked)
         btn_row.addWidget(self._clear_btn)
         btn_row.addStretch()

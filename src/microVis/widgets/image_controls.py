@@ -106,8 +106,8 @@ class ImageControls(QScrollArea):
                 font-size: 8pt;
             }
             QPushButton {
-                font-size: 8pt;
-                padding: 1px 4px;
+                font-size: 9pt;
+                padding: 2px 6px;
             }
         """)
         self._layout = QVBoxLayout(container)
@@ -174,14 +174,12 @@ class ImageControls(QScrollArea):
         btn_row.addStretch()
         self._auto_all_btn = QPushButton("Auto")
         self._auto_all_btn.setProperty("class", "secondary")
-        self._auto_all_btn.setFixedHeight(18)
-        self._auto_all_btn.setFixedWidth(48)
+        self._auto_all_btn.setFixedSize(64, 24)
         self._auto_all_btn.clicked.connect(self.auto_all_clicked)
         btn_row.addWidget(self._auto_all_btn)
         self._reset_btn = QPushButton("Reset")
         self._reset_btn.setProperty("class", "secondary")
-        self._reset_btn.setFixedHeight(18)
-        self._reset_btn.setFixedWidth(48)
+        self._reset_btn.setFixedSize(64, 24)
         self._reset_btn.clicked.connect(self.reset_requested)
         btn_row.addWidget(self._reset_btn)
         btn_row.addStretch()

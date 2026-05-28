@@ -12,8 +12,6 @@ from microVis.log_utils import get_logger
 
 _log = get_logger("microVis.data_module")
 
-_EXCLUDE_TABLES = frozenset({"image", "metadata"})
-
 
 def _infer_plate_dims(wells: list[str]) -> tuple[int, int]:
     """Infer plate dimensions from well names (e.g. B2, D2 → 4 rows, 2 cols)."""
@@ -256,3 +254,60 @@ class DataModule:
             "db_connected": self.has_db(),
             "profiling_tables": list(self.get_profiling_tables().keys()),
         }
+
+
+def parse_plate_metadata(path: str) -> pd.DataFrame:
+    """Parse a plate-shaped Excel metadata file into a long DataFrame.
+
+    Each sheet is a plate layout:
+      - Row 1: column numbers [None, 1, 2, ...]
+      - Col A: row IDs [A, B, C, ...]
+      - Data starts at B2 (well A1)
+
+    Returns a DataFrame with 'well' column + one column per sheet name.
+    """
+    xls = pd.ExcelFile(path)
+    frames: list[pd.DataFrame] = []
+
+    for sheet_name in xls.sheet_names:
+        raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
+        if raw.empty or raw.shape[0] < 2 or raw.shape[1] < 2:
+            continue
+
+        # Column numbers from row 0 (skip first cell which is None)
+        col_numbers = raw.iloc[0, 1:].tolist()
+        # Row IDs from column 0 (skip header row)
+        row_ids = raw.iloc[1:, 0].tolist()
+
+        records = []
+        for r_idx, row_id in enumerate(row_ids):
+            if pd.isna(row_id):
+                continue
+            row_id = str(row_id).strip()
+            for c_idx, col_num in enumerate(col_numbers):
+                if pd.isna(col_num):
+                    continue
+                well = f"{row_id}{int(col_num)}"
+                val = raw.iloc[r_idx + 1, c_idx + 1]
+                records.append({"well": well, sheet_name: val})
+
+        if records:
+            frames.append(pd.DataFrame(records))
+
+    if not frames:
+        return pd.DataFrame(columns=["well"])
+
+    # Merge all sheets on 'well'
+    result = frames[0]
+    for df in frames[1:]:
+        result = result.merge(df, on="well", how="outer")
+
+    # Auto-detect column types: try numeric, fall back to string
+    for col in result.columns:
+        if col == "well":
+            continue
+        converted = pd.to_numeric(result[col], errors="coerce")
+        if converted.notna().sum() > 0:
+            result[col] = converted
+
+    return result

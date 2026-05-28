@@ -57,6 +57,9 @@ class WellGridCanvas(QWidget):
         self._well_indices: dict[str, int] = {}
         self._data_map: dict[str, float | str] = {}
         self._col_name: str | None = None
+        self._row_labels: list[str] = []
+        self._n_rows: int = 0
+        self._n_cols: int = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -72,6 +75,7 @@ class WellGridCanvas(QWidget):
         palette: str,
         fmt_name: str,
         selected_wells: set[str],
+        metadata_map: dict[str, float | str] | None = None,
     ) -> None:
         """Redraw the well grid with current parameters."""
         import matplotlib.pyplot as plt
@@ -89,6 +93,9 @@ class WellGridCanvas(QWidget):
         cols = max(cols, fmt_cols)
 
         row_labels = _row_labels(rows)
+        self._row_labels = row_labels
+        self._n_rows = rows
+        self._n_cols = cols
         all_wells = dm.get_wells()
         well_set = set(all_wells)
 
@@ -99,10 +106,13 @@ class WellGridCanvas(QWidget):
         if col_val and col_val[0] is not None and table_name:
             col_name, is_numeric = col_val
             self._col_name = col_name
-            try:
-                data_map = dm.aggregate(table_name, col_name, agg)
-            except Exception:
-                data_map = {}
+            if metadata_map is not None:
+                data_map = metadata_map
+            else:
+                try:
+                    data_map = dm.aggregate(table_name, col_name, agg)
+                except Exception:
+                    data_map = {}
         self._data_map = data_map
 
         marker_size = _compute_marker_size(rows, cols)
@@ -228,14 +238,13 @@ class WellGridCanvas(QWidget):
         if event.inaxes != self._axes:
             QToolTip.hideText()
             return
-        # Find nearest well
         if event.xdata is None or event.ydata is None:
+            QToolTip.hideText()
             return
         col = round(event.xdata)
         row = round(event.ydata)
-        row_labels = _row_labels(int(self._axes.get_ylim()[1] - 0.5))
-        if 1 <= row <= len(row_labels) and 1 <= col:
-            well = f"{row_labels[row - 1]}{col}"
+        if 1 <= row <= self._n_rows and 1 <= col <= self._n_cols:
+            well = f"{self._row_labels[row - 1]}{col}"
             if well in self._data_map and self._col_name:
                 val = self._data_map[well]
                 if isinstance(val, float):
@@ -247,9 +256,11 @@ class WellGridCanvas(QWidget):
             else:
                 text = ""
             if text:
-                QToolTip.showText(QCursor.pos(), text, self._canvas)
+                QToolTip.showText(QCursor.pos(), text, self)
             else:
                 QToolTip.hideText()
+        else:
+            QToolTip.hideText()
 
 
 def _row_labels(n: int) -> list[str]:

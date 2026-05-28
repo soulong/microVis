@@ -79,9 +79,10 @@ class _ThumbnailView(QGraphicsView):
         self.setMouseTracking(True)
 
         # Static tooltip fallback (when no mask for per-object hover)
-        if self._mask is None:
+        # Only show when overlay_col is set (not when Color by is None)
+        if self._mask is None and overlay_col:
             parts = []
-            if overlay_val is not None and overlay_col:
+            if overlay_val is not None:
                 if isinstance(overlay_val, float):
                     parts.append(f"{overlay_col}: {overlay_val:.4f}")
                 else:
@@ -368,8 +369,8 @@ def _create_colorbar_widget(cmap_name: str) -> QWidget:
     layout.setContentsMargins(8, 8, 8, 8)
     layout.setSpacing(4)
 
-    fig = Figure(facecolor="#252536", figsize=(0.625, 0.25))
-    fig.subplots_adjust(left=0.05, right=0.95, top=0.8, bottom=0.05)
+    fig = Figure(facecolor="#252536", figsize=(3.0, 0.4), dpi=100)
+    fig.subplots_adjust(left=0.08, right=0.92, top=0.55, bottom=0.35)
     ax = fig.add_subplot(111)
 
     cmap = plt.colormaps[cmap_name]
@@ -378,14 +379,14 @@ def _create_colorbar_widget(cmap_name: str) -> QWidget:
     fig.colorbar(sm, cax=ax, orientation="horizontal")
     ax.xaxis.tick_top()
     ax.xaxis.set_label_position("top")
-    ax.tick_params(colors="white", labelsize=30)
+    ax.tick_params(colors="white", labelsize=8)
     ax.set_facecolor("#252536")
     for spine in ax.spines.values():
         spine.set_color("#333333")
 
     canvas = FigureCanvasQTAgg(fig)
     canvas.setFixedWidth(300)
-    canvas.setFixedHeight(20)
+    canvas.setFixedHeight(40)
     canvas.setStyleSheet("background-color: #252536;")
     layout.addWidget(canvas)
 

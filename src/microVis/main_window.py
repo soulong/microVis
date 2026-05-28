@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
+
+import pandas as pd
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
@@ -29,7 +32,6 @@ from microVis.processing.compositing import composite_image
 from microVis.processing.contrast import apply_contrast, invert_image
 from microVis.processing.overlay import extract_polygons
 from microVis.widgets.data_view import DataView
-from microVis.widgets.folder_selector import FolderSelector
 from microVis.widgets.image_controls import ImageControls
 from microVis.widgets.image_display import ImageDisplay
 from microVis.widgets.pixel_info import PixelInfo
@@ -71,6 +73,15 @@ class MainWindow(QMainWindow):
         # Image debounce timer
         self._debounce = QTimer(singleShot=True, interval=300, timeout=self._refresh_images)
 
+        # PyGwalker server state
+        self._pygwalker_server = None
+        self._pygwalker_ready = threading.Event()
+
+        # Metadata
+        self._metadata_df: pd.DataFrame | None = None
+        self._metadata_merged: pd.DataFrame | None = None
+        self._current_table: str | None = None
+
         self._build_ui()
         self._connect_signals()
 
@@ -91,6 +102,7 @@ class MainWindow(QMainWindow):
 
         # Status bar (hidden)
         self.statusBar().setVisible(False)
+        self.statusBar().setMaximumHeight(0)
 
     def _build_main_page(self) -> QWidget:
         page = QWidget()
@@ -110,40 +122,36 @@ class MainWindow(QMainWindow):
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(0)
 
-        self._nav_load = RotatedLabel("Load")
-        self._nav_load.setProperty("class", "nav-tab")
-        self._nav_load.setProperty("active", "true")
-
-        self._nav_plate = RotatedLabel("Plate")
-        self._nav_plate.setProperty("class", "nav-tab")
-        self._nav_plate.setProperty("active", "false")
-
         self._nav_data = RotatedLabel("Data")
         self._nav_data.setProperty("class", "nav-tab")
-        self._nav_data.setProperty("active", "false")
+        self._nav_data.setProperty("active", "true")
+        _data_font = self._nav_data.font()
+        _data_font.setBold(True)
+        self._nav_data.setFont(_data_font)
 
-        nav_layout.addWidget(self._nav_load)
-        nav_layout.addWidget(self._nav_plate)
+        self._nav_plate = RotatedLabel("Image")
+        self._nav_plate.setProperty("class", "nav-tab")
+        self._nav_plate.setProperty("active", "false")
+        _plate_font = self._nav_plate.font()
+        _plate_font.setBold(True)
+        self._nav_plate.setFont(_plate_font)
+
         nav_layout.addWidget(self._nav_data)
+        nav_layout.addWidget(self._nav_plate)
         nav_layout.addStretch()
 
         # ── Stacked content ──
         self._stack_content = QStackedWidget()
 
-        # Page 0: Load
-        self._folder_page = FolderSelector()
-        self._stack_content.addWidget(self._folder_page)
+        # Page 0: Data View
+        self._data_view = DataView()
+        self._stack_content.addWidget(self._data_view)
 
         # Page 1: Plate & Images
         self._stack_content.addWidget(self._build_plate_images_tab())
 
-        # Page 2: Data View
-        self._data_view = DataView()
-        self._stack_content.addWidget(self._data_view)
-
-        self._nav_load.clicked.connect(lambda: self._switch_tab(0))
+        self._nav_data.clicked.connect(lambda: self._switch_tab(0))
         self._nav_plate.clicked.connect(lambda: self._switch_tab(1))
-        self._nav_data.clicked.connect(lambda: self._switch_tab(2))
 
         body.addWidget(nav)
         body.addWidget(self._stack_content, stretch=1)
@@ -158,10 +166,9 @@ class MainWindow(QMainWindow):
 
     def _switch_tab(self, index: int) -> None:
         self._stack_content.setCurrentIndex(index)
-        self._nav_load.setProperty("active", index == 0)
+        self._nav_data.setProperty("active", index == 0)
         self._nav_plate.setProperty("active", index == 1)
-        self._nav_data.setProperty("active", index == 2)
-        for w in (self._nav_load, self._nav_plate, self._nav_data):
+        for w in (self._nav_data, self._nav_plate):
             w.style().unpolish(w)
             w.style().polish(w)
 
@@ -207,9 +214,6 @@ class MainWindow(QMainWindow):
     # ── Signal Connections ───────────────────────────────────────────────────
 
     def _connect_signals(self) -> None:
-        # Folder selector
-        self._folder_page.load_requested.connect(self._on_load_requested)
-
         # Well grid controls
         gw = self._grid_controls
         gw.plate_format.currentTextChanged.connect(self._on_grid_params_changed)
@@ -242,33 +246,37 @@ class MainWindow(QMainWindow):
         self._image_display.pixel_clicked.connect(self._on_pixel_clicked)
 
         # Data view
-        self._data_view.table_selector.currentTextChanged.connect(self._on_data_table_changed)
+        self._data_view.dataset_browse_clicked.connect(self._on_dataset_browse)
+        self._data_view.pygwalker_open_clicked.connect(self._on_pygwalker_open)
+        self._data_view.pygwalker_stop_clicked.connect(self._on_pygwalker_stop)
+        self._data_view.metadata_browse_clicked.connect(self._on_metadata_browse)
+        self._data_view.metadata_merge_clicked.connect(self._on_metadata_merge)
+        self._data_view.metadata_clear_clicked.connect(self._on_metadata_clear)
+        self._data_view.write_to_db_clicked.connect(self._on_write_to_db)
+        self._data_view.table_radio_selected.connect(self._on_data_table_changed)
 
     # ── Dataset Loading ──────────────────────────────────────────────────────
 
-    def _on_load_requested(self, path: str) -> None:
-        self._load_dataset(path)
+    def _on_dataset_browse(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        path = QFileDialog.getExistingDirectory(self, "Select Dataset Directory")
+        if path:
+            self._load_dataset(path)
 
     def _load_dataset(self, path: str) -> None:
         p = Path(path)
         if not p.is_dir():
-            self.statusBar().showMessage(f"Invalid directory: {path}")
-            self._folder_page.show_error(f"Not a valid directory: {path}")
             return
         if not (p / "image").is_dir():
-            self.statusBar().showMessage(f"No 'image/' subdirectory in: {path}")
-            self._folder_page.show_error(f"No 'image/' subdirectory found in:\n{path}")
             return
 
         try:
             self._dm = DataModule(str(p))
-        except Exception as e:
-            self.statusBar().showMessage(f"Failed to load dataset: {e}")
-            self._folder_page.show_error(f"Failed to load dataset:\n{e}")
+        except Exception:
             return
 
         self._dataset_dir = str(p)
-        self._folder_page.clear_error()
+        self._data_view.set_dataset_label(str(p))
 
         # Reset UI state for new dataset
         self._image_display.clear()
@@ -290,14 +298,9 @@ class MainWindow(QMainWindow):
         self._populate_image_controls()
         self._populate_data_controls()
 
-        # Switch to Plate tab
-        self._switch_tab(1)
-
         # Initial render
         self._update_grid()
         self._schedule_image_refresh()
-
-        self.statusBar().showMessage(f"Loaded: {p.name}  |  {len(all_wells)} wells")
 
     # ── Channel Config ───────────────────────────────────────────────────────
 
@@ -392,12 +395,14 @@ class MainWindow(QMainWindow):
         gw.column.addItem("None")
         tables = self._dm.get_profiling_tables()
         for tname in tables:
-            if tname in ("image", "metadata"):
-                continue
             cols = self._dm.get_profiling_columns(tname)
             for name, ctype, is_num in cols:
-                tag = "[num]" if is_num else "[cat]"
-                gw.column.addItem(f"{tname}/{name} {tag}", (tname, name, is_num))
+                gw.column.addItem(f"{tname}/{name}", (tname, name, is_num))
+        # Add merged metadata columns
+        if self._metadata_merged is not None:
+            for col in self._metadata_merged.columns:
+                if col != "well":
+                    gw.column.addItem(f"metadata/{col}", ("metadata", col, False))
         gw.column.blockSignals(False)
 
     def _populate_image_controls(self) -> None:
@@ -423,8 +428,6 @@ class MainWindow(QMainWindow):
         ic.overlay_col.addItem("None")
         tables = dm.get_profiling_tables()
         for tname in tables:
-            if tname in ("image", "metadata"):
-                continue
             cols = dm.get_profiling_columns(tname)
             for name, ctype, is_num in cols:
                 ic.overlay_col.addItem(f"{tname}/{name}", (tname, name))
@@ -438,18 +441,277 @@ class MainWindow(QMainWindow):
 
     def _populate_data_controls(self) -> None:
         if self._dm is None:
-            self._data_view.table_selector.clear()
+            self._data_view.set_table_names([])
             self._data_view.clear_table()
+            self._data_view.set_pygwalker_buttons(False)
             return
         tables = self._dm.get_profiling_tables()
-        self._data_view.table_selector.blockSignals(True)
-        self._data_view.table_selector.clear()
-        self._data_view.table_selector.addItems(list(tables.keys()))
-        self._data_view.table_selector.blockSignals(False)
-        if tables:
-            self._on_data_table_changed(list(tables.keys())[0])
-        else:
+        table_names = list(tables.keys())
+        self._data_view.set_table_names(table_names)
+        self._data_view.set_pygwalker_buttons(bool(tables))
+        if not tables:
             self._data_view.clear_table()
+
+    # ── Metadata ─────────────────────────────────────────────────────────────
+
+    def _on_metadata_browse(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Metadata File", "", "Excel Files (*.xlsx *.xls)"
+        )
+        if not path:
+            return
+        try:
+            from microVis.io.data_module import parse_plate_metadata
+            self._metadata_df = parse_plate_metadata(path)
+            self._metadata_path = str(path)
+            self._data_view.set_metadata_label(Path(path).name)
+
+        except Exception:
+            self._metadata_df = None
+            self._data_view.set_metadata_label(None)
+
+    def _on_metadata_merge(self) -> None:
+        if self._metadata_df is None:
+            return
+        self._metadata_merged = self._metadata_df.copy()
+
+        self._refresh_data_table()
+        self._update_overlay_with_metadata()
+
+    def _on_metadata_clear(self) -> None:
+        self._metadata_df = None
+        self._metadata_merged = None
+        self._data_view.set_metadata_label(None)
+
+        self._refresh_data_table()
+        self._update_overlay_with_metadata()
+
+    def _update_overlay_with_metadata(self) -> None:
+        ic = self._image_controls
+        ic.overlay_col.blockSignals(True)
+        # Remove existing metadata items (tagged with "metadata/" prefix)
+        for i in range(ic.overlay_col.count() - 1, -1, -1):
+            data = ic.overlay_col.itemData(i)
+            if data and isinstance(data, tuple) and data[0] == "metadata":
+                ic.overlay_col.removeItem(i)
+        # Add merged metadata columns
+        if self._metadata_merged is not None:
+            for col in self._metadata_merged.columns:
+                if col != "well":
+                    ic.overlay_col.addItem(f"metadata/{col}", ("metadata", col))
+        ic.overlay_col.blockSignals(False)
+        # Also update the well grid Color by dropdown
+        self._update_grid_columns()
+
+    def _on_write_to_db(self) -> None:
+        if self._dm is None or self._metadata_merged is None:
+            return
+        try:
+            tables = self._dm.get_profiling_tables()
+            import sqlite3
+            db_path = str(Path(self._dm._root_dir) / "results.db")
+            conn = sqlite3.connect(db_path)
+            for tname in tables:
+                df = self._dm.get_table_df(tname)
+                if df is not None and "well" in df.columns:
+                    merged = self._join_metadata(df)
+                    merged.to_sql(tname, conn, if_exists="replace", index=False)
+            conn.close()
+
+        except Exception:
+            pass
+
+    def _refresh_data_table(self) -> None:
+        if self._current_table:
+            self._on_data_table_changed(self._current_table)
+
+    # ── PyGwalker Server ─────────────────────────────────────────────────────
+
+    def _on_pygwalker_open(self) -> None:
+        if self._dm is None:
+            return
+        # Collect all tables with metadata joined
+        table_data: dict[str, pd.DataFrame] = {}
+        for tname in self._dm.get_profiling_tables():
+            tdf = self._dm.get_table_df(tname)
+            if tdf is None or tdf.empty:
+                continue
+            tdf = tdf.copy()
+            if self._metadata_merged is not None and "well" in tdf.columns:
+                tdf = self._join_metadata(tdf)
+            table_data[tname] = tdf
+        if not table_data:
+            return
+
+        self._stop_pygwalker_server()
+        self._pygwalker_ready.clear()
+        self._data_view.set_pygwalker_running(True)
+
+        def _run() -> None:
+            try:
+                from http.server import BaseHTTPRequestHandler
+                import json
+                import base64
+                import zlib
+                from pygwalker.api.webserver import (
+                    CustomTCPServer, find_free_port, DataFrameEncoder,
+                )
+                from pygwalker.api.pygwalker import PygWalker
+                from pygwalker.communications.base import BaseCommunication
+                from pygwalker.services.render import GWALKER_SCRIPT_BASE64
+
+                # Pre-decompress walker JS once (avoids DecompressionStream)
+                compressed_js = base64.b64decode(GWALKER_SCRIPT_BASE64)
+                gw_js = zlib.decompress(compressed_js, 15).decode("utf-8")
+
+                table_names = list(table_data.keys())
+                walkers: list[PygWalker] = []
+                table_pages: list[str] = []
+                for i, tname in enumerate(table_names):
+                    walker = PygWalker(
+                        gid=f"pgw_{i}",
+                        dataset=table_data[tname],
+                        field_specs=[], spec="", source_invoke_code="",
+                        theme_key="g2", appearance="media",
+                        show_cloud_tool=False, use_preview=False,
+                        kernel_computation=None, use_save_tool=True,
+                        gw_mode="explore", is_export_dataframe=True,
+                        kanaries_api_key="", default_tab="vis",
+                        cloud_computation=False,
+                    )
+                    walker._init_callback(BaseCommunication(str(walker.gid)))
+                    walkers.append(walker)
+                    props = walker._get_props("web_server")
+                    props["communicationUrl"] = f"/table/{i}/comm"
+                    props_json = json.dumps(props, cls=DataFrameEncoder)
+                    container_id = f"gwalker-div-pgw_{i}"
+                    version = props.get("version", "")
+                    page = (
+                        '<!DOCTYPE html><html lang="en"><head>'
+                        '<meta charset="utf-8">'
+                        '<style>body{margin:0;background:#1e1e2e;overflow:hidden}</style>'
+                        '</head><body>'
+                        f'<div id="{container_id}" class="gwalker-container"></div>'
+                        '<script src="/gw.js"></script>'
+                        '<script>'
+                        f'window.__GW_VERSION="{version}";'
+                        f'var props={props_json};'
+                        f'var gw_id="{container_id}";'
+                        'try{PyGWalkerApp.GWalker(props,gw_id)}'
+                        'catch(e){console.error(e);'
+                        'document.getElementById(gw_id).innerHTML='
+                        '"<p style=\'color:#ccc;padding:20px\'>Error: "+e.message+"</p>"}'
+                        '</script></body></html>'
+                    )
+                    table_pages.append(page)
+
+                # Launcher page with table selector
+                options = "".join(
+                    '<option value="/table/{0}">{1}</option>'.format(i, n)
+                    for i, n in enumerate(table_names)
+                )
+                launcher = (
+                    '<!DOCTYPE html><html><head>'
+                    '<style>'
+                    'body{margin:0;background:#1e1e2e;font-family:sans-serif}'
+                    '#sel{position:fixed;top:0;left:0;right:0;z-index:10;'
+                    'background:#252536;padding:6px 12px}'
+                    '#sel select{font-size:13px;padding:2px 8px}'
+                    'iframe{position:absolute;top:40px;left:0;width:100%;'
+                    'height:calc(100vh - 40px);border:none;overflow:hidden}'
+                    '</style></head><body>'
+                    '<div id="sel"><select onchange="'
+                    "document.getElementById('f').src=this.value"
+                    '">'
+                    + options +
+                    '</select></div>'
+                    '<iframe id="f" scrolling="no" src="/table/0"></iframe>'
+                    '</body></html>'
+                )
+
+                class _Handler(BaseHTTPRequestHandler):
+                    def do_GET(self_inner):
+                        path = self_inner.path
+                        if path == "/":
+                            self_inner.send_response(200)
+                            self_inner.send_header("Content-type", "text/html")
+                            self_inner.end_headers()
+                            self_inner.wfile.write(launcher.encode("utf-8"))
+                            return
+                        if path == "/gw.js":
+                            self_inner.send_response(200)
+                            self_inner.send_header(
+                                "Content-type", "application/javascript"
+                            )
+                            self_inner.end_headers()
+                            self_inner.wfile.write(gw_js.encode("utf-8"))
+                            return
+                        for i, page in enumerate(table_pages):
+                            if path == f"/table/{i}":
+                                self_inner.send_response(200)
+                                self_inner.send_header("Content-type", "text/html")
+                                self_inner.end_headers()
+                                self_inner.wfile.write(page.encode("utf-8"))
+                                return
+                        self_inner.send_error(404)
+
+                    def do_POST(self_inner):
+                        for i, walker in enumerate(walkers):
+                            if self_inner.path == f"/table/{i}/comm":
+                                length = int(
+                                    self_inner.headers.get("Content-Length", 0)
+                                )
+                                body = self_inner.rfile.read(length).decode("utf-8")
+                                payload = json.loads(body)
+                                result = walker.comm._receive_msg(
+                                    payload["action"], payload["data"]
+                                )
+                                self_inner.send_response(200)
+                                self_inner.send_header(
+                                    "Content-type", "application/json"
+                                )
+                                self_inner.end_headers()
+                                self_inner.wfile.write(
+                                    json.dumps(
+                                        result, cls=DataFrameEncoder
+                                    ).encode("utf-8")
+                                )
+                                return
+                        self_inner.send_error(404)
+
+                    def log_message(self_inner, *args):
+                        pass
+
+                port = find_free_port()
+                with CustomTCPServer(("127.0.0.1", port), _Handler) as httpd:
+                    self._pygwalker_server = httpd
+                    self._pygwalker_ready.set()
+                    import webbrowser
+                    webbrowser.open(f"http://localhost:{port}")
+                    httpd.serve_forever()
+            except Exception as e:
+                self._pygwalker_ready.set()
+                print(f"PyGwalker error: {e}")
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        self._pygwalker_ready.wait(timeout=10)
+        if self._pygwalker_server is None:
+            self._data_view.set_pygwalker_running(False)
+
+    def _on_pygwalker_stop(self) -> None:
+        self._stop_pygwalker_server()
+        self._data_view.set_pygwalker_running(False)
+
+
+    def _stop_pygwalker_server(self) -> None:
+        if self._pygwalker_server is not None:
+            try:
+                self._pygwalker_server.shutdown()
+            except Exception:
+                pass
+            self._pygwalker_server = None
 
     # ── Grid Handlers ────────────────────────────────────────────────────────
 
@@ -489,6 +751,15 @@ class MainWindow(QMainWindow):
         else:
             table_name = ""
             col_val = (None, False)
+
+        # Pre-compute metadata data_map for grid (metadata isn't in the DB)
+        metadata_map: dict[str, float | str] | None = None
+        if table_name == "metadata" and self._metadata_merged is not None:
+            if col_name in self._metadata_merged.columns:
+                metadata_map = dict(
+                    zip(self._metadata_merged["well"], self._metadata_merged[col_name])
+                )
+
         self._grid_canvas.update_grid(
             self._dm,
             table_name=table_name,
@@ -498,6 +769,7 @@ class MainWindow(QMainWindow):
             palette=gw.palette.currentText(),
             fmt_name=gw.plate_format.currentText(),
             selected_wells=self._selected_wells,
+            metadata_map=metadata_map,
         )
 
     # ── Image Handlers ───────────────────────────────────────────────────────
@@ -581,12 +853,18 @@ class MainWindow(QMainWindow):
         # Pre-compute overlay column values per well
         overlay_values: dict[str, float | str] = {}
         if self._overlay_col and self._overlay_table:
-            try:
-                overlay_values = self._dm.aggregate(
-                    self._overlay_table, self._overlay_col, "mean"
-                )
-            except Exception:
-                pass
+            if self._overlay_table == "metadata" and self._metadata_merged is not None:
+                if self._overlay_col in self._metadata_merged.columns:
+                    overlay_values = dict(
+                        zip(self._metadata_merged["well"], self._metadata_merged[self._overlay_col])
+                    )
+            else:
+                try:
+                    overlay_values = self._dm.aggregate(
+                        self._overlay_table, self._overlay_col, "mean"
+                    )
+                except Exception:
+                    pass
 
         # Pre-compute object counts per well and per-object values
         object_counts: dict[str, int] = {}
@@ -618,7 +896,8 @@ class MainWindow(QMainWindow):
         stacks_int = [int(s) for s in stacks]
         tps_int = [int(t) for t in tps]
         rows_info = self._dm.lookup_row_indices(wells, fields_int, stacks_int, tps_int)
-        rows_info.sort(key=lambda r: (r[1], r[4], r[3], r[2]))
+        from natsort import natsort_key
+        rows_info.sort(key=lambda r: (natsort_key(str(r[1])), r[4], r[3], r[2]))
 
         if not rows_info:
             self._image_display.clear()
@@ -626,7 +905,7 @@ class MainWindow(QMainWindow):
 
         saved_state = self._image_display.save_view_state()
         self._image_display.show_loading(len(rows_info))
-        self.statusBar().showMessage(f"Loading {len(rows_info)} images...")
+
 
         # Process synchronously on the main thread
         import numpy as np
@@ -685,8 +964,8 @@ class MainWindow(QMainWindow):
 
                 # Keep UI responsive during long loads
                 QApplication.processEvents()
-            except Exception as e:
-                self.statusBar().showMessage(f"Error: [{well} f{field}] {e}")
+            except Exception:
+                pass
 
         if results:
             thumb_size = int(self._image_controls.image_size.value())
@@ -723,11 +1002,20 @@ class MainWindow(QMainWindow):
     def _on_data_table_changed(self, table_name: str) -> None:
         if self._dm is None or not table_name:
             return
+        self._current_table = table_name
         try:
             df = self._dm.get_table_df(table_name)
+            if df is not None and self._metadata_merged is not None and "well" in df.columns:
+                df = self._join_metadata(df)
             self._data_view.set_dataframe(df)
-        except Exception as e:
-            self.statusBar().showMessage(f"Error loading table: {e}")
+        except Exception:
+            pass
+
+    def _join_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
+        meta_cols = [c for c in self._metadata_merged.columns if c != "well"]
+        merged = df.merge(self._metadata_merged, on="well", how="left")
+        other_cols = [c for c in merged.columns if c not in meta_cols and c != "well"]
+        return merged[["well"] + meta_cols + other_cols]
 
     # ── Cleanup ──────────────────────────────────────────────────────────────
 

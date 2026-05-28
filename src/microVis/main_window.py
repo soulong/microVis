@@ -533,7 +533,6 @@ class MainWindow(QMainWindow):
         # Re-init channel config to defaults
         self._init_channel_config()
         ic.set_channels(self._ch_config)
-        ic.channel_config_changed.connect(self._schedule_image_refresh)
         self._schedule_image_refresh()
 
     def _on_contrast_changed(self, method: str) -> None:
@@ -625,6 +624,7 @@ class MainWindow(QMainWindow):
             self._image_display.clear()
             return
 
+        saved_state = self._image_display.save_view_state()
         self._image_display.show_loading(len(rows_info))
         self.statusBar().showMessage(f"Loading {len(rows_info)} images...")
 
@@ -695,6 +695,7 @@ class MainWindow(QMainWindow):
                 overlay_alpha=self._overlay_alpha,
                 overlay_cmap=self._overlay_cmap,
                 thumb_size=thumb_size,
+                saved_state=saved_state,
             )
             pass
 

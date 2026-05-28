@@ -167,6 +167,18 @@ class _ThumbnailView(QGraphicsView):
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
         event.accept()
 
+    def get_view_state(self) -> dict:
+        return {
+            "transform": self.transform(),
+            "h_scroll": self.horizontalScrollBar().value(),
+            "v_scroll": self.verticalScrollBar().value(),
+        }
+
+    def restore_view_state(self, state: dict) -> None:
+        self.setTransform(state["transform"])
+        self.horizontalScrollBar().setValue(state["h_scroll"])
+        self.verticalScrollBar().setValue(state["v_scroll"])
+
 
 class ImageDisplay(QScrollArea):
     """Scrollable area displaying image thumbnails grouped by well."""
@@ -185,6 +197,18 @@ class ImageDisplay(QScrollArea):
         self._layout.addStretch()
         self.setWidget(container)
 
+    def save_view_state(self) -> dict:
+        state = {}
+        for i in range(self._layout.count()):
+            item = self._layout.itemAt(i)
+            if item is None or not item.widget():
+                continue
+            row_widget = item.widget()
+            for child in row_widget.findChildren(_ThumbnailView):
+                key = (child._well, child._field, child._stack, child._tp)
+                state[key] = child.get_view_state()
+        return state
+
     def clear(self) -> None:
         self._clear_layout()
 
@@ -201,6 +225,7 @@ class ImageDisplay(QScrollArea):
         overlay_alpha: float = 0.4,
         overlay_cmap: str = "Viridis",
         thumb_size: int = 210,
+        saved_state: dict | None = None,
     ) -> None:
         self._clear_layout()
 
@@ -244,6 +269,10 @@ class ImageDisplay(QScrollArea):
                     thumb_size,
                 )
                 thumb.pixel_clicked.connect(self.pixel_clicked)
+                if saved_state:
+                    key = (r["well"], r["field"], r["stack"], r["tp"])
+                    if key in saved_state:
+                        thumb.restore_view_state(saved_state[key])
                 col.addWidget(thumb)
                 row.addLayout(col)
             row.addStretch()

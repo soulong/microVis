@@ -40,6 +40,8 @@ from microVis.widgets._event_filter import RotatedLabel
 from microVis.widgets.well_grid_controls import WellGridControls
 
 
+
+
 class MainWindow(QMainWindow):
     """Top-level application window for microVis."""
 
@@ -72,10 +74,6 @@ class MainWindow(QMainWindow):
 
         # Image debounce timer
         self._debounce = QTimer(singleShot=True, interval=300, timeout=self._refresh_images)
-
-        # PyGwalker server state
-        self._pygwalker_server = None
-        self._pygwalker_ready = threading.Event()
 
         # Metadata
         self._metadata_df: pd.DataFrame | None = None
@@ -248,7 +246,6 @@ class MainWindow(QMainWindow):
         # Data view
         self._data_view.dataset_browse_clicked.connect(self._on_dataset_browse)
         self._data_view.pygwalker_open_clicked.connect(self._on_pygwalker_open)
-        self._data_view.pygwalker_stop_clicked.connect(self._on_pygwalker_stop)
         self._data_view.metadata_browse_clicked.connect(self._on_metadata_browse)
         self._data_view.metadata_merge_clicked.connect(self._on_metadata_merge)
         self._data_view.metadata_clear_clicked.connect(self._on_metadata_clear)
@@ -526,192 +523,39 @@ class MainWindow(QMainWindow):
         if self._current_table:
             self._on_data_table_changed(self._current_table)
 
-    # ── PyGwalker Server ─────────────────────────────────────────────────────
+    # ── PyGwalker ────────────────────────────────────────────────────────────
 
     def _on_pygwalker_open(self) -> None:
-        if self._dm is None:
+        """Launch PyGwalker in the browser for the currently selected table."""
+        if self._dm is None or not self._current_table:
             return
-        # Collect all tables with metadata joined
-        table_data: dict[str, pd.DataFrame] = {}
-        for tname in self._dm.get_profiling_tables():
-            tdf = self._dm.get_table_df(tname)
-            if tdf is None or tdf.empty:
-                continue
-            tdf = tdf.copy()
-            if self._metadata_merged is not None and "well" in tdf.columns:
-                tdf = self._join_metadata(tdf)
-            table_data[tname] = tdf
-        if not table_data:
+        df = self._dm.get_table_df(self._current_table)
+        if df is None or df.empty:
             return
+        df = df.copy()
+        if self._metadata_merged is not None and "well" in df.columns:
+            df = self._join_metadata(df)
 
-        self._stop_pygwalker_server()
-        self._pygwalker_ready.clear()
-        self._data_view.set_pygwalker_running(True)
-
-        def _run() -> None:
+        def _serve() -> None:
+            from pygwalker.api.webserver import walk
             try:
-                from http.server import BaseHTTPRequestHandler
-                import json
-                import base64
-                import zlib
-                from pygwalker.api.webserver import (
-                    CustomTCPServer, find_free_port, DataFrameEncoder,
+                walk(
+                    df,
+                    gid="pgw",
+                    theme_key="g2",
+                    appearance="media",
+                    show_cloud_tool=False,
+                    kernel_computation=None,
+                    cloud_computation=False,
+                    default_tab="vis",
+                    auto_open=True,
+                    auto_shutdown=True,
                 )
-                from pygwalker.api.pygwalker import PygWalker
-                from pygwalker.communications.base import BaseCommunication
-                from pygwalker.services.render import GWALKER_SCRIPT_BASE64
-
-                # Pre-decompress walker JS once (avoids DecompressionStream)
-                compressed_js = base64.b64decode(GWALKER_SCRIPT_BASE64)
-                gw_js = zlib.decompress(compressed_js, 15).decode("utf-8")
-
-                table_names = list(table_data.keys())
-                walkers: list[PygWalker] = []
-                table_pages: list[str] = []
-                for i, tname in enumerate(table_names):
-                    walker = PygWalker(
-                        gid=f"pgw_{i}",
-                        dataset=table_data[tname],
-                        field_specs=[], spec="", source_invoke_code="",
-                        theme_key="g2", appearance="media",
-                        show_cloud_tool=False, use_preview=False,
-                        kernel_computation=None, use_save_tool=True,
-                        gw_mode="explore", is_export_dataframe=True,
-                        kanaries_api_key="", default_tab="vis",
-                        cloud_computation=False,
-                    )
-                    walker._init_callback(BaseCommunication(str(walker.gid)))
-                    walkers.append(walker)
-                    props = walker._get_props("web_server")
-                    props["communicationUrl"] = f"/table/{i}/comm"
-                    props_json = json.dumps(props, cls=DataFrameEncoder)
-                    container_id = f"gwalker-div-pgw_{i}"
-                    version = props.get("version", "")
-                    page = (
-                        '<!DOCTYPE html><html lang="en"><head>'
-                        '<meta charset="utf-8">'
-                        '<style>body{margin:0;background:#1e1e2e;overflow:hidden}</style>'
-                        '</head><body>'
-                        f'<div id="{container_id}" class="gwalker-container"></div>'
-                        '<script src="/gw.js"></script>'
-                        '<script>'
-                        f'window.__GW_VERSION="{version}";'
-                        f'var props={props_json};'
-                        f'var gw_id="{container_id}";'
-                        'try{PyGWalkerApp.GWalker(props,gw_id)}'
-                        'catch(e){console.error(e);'
-                        'document.getElementById(gw_id).innerHTML='
-                        '"<p style=\'color:#ccc;padding:20px\'>Error: "+e.message+"</p>"}'
-                        '</script></body></html>'
-                    )
-                    table_pages.append(page)
-
-                # Launcher page with table selector
-                options = "".join(
-                    '<option value="/table/{0}">{1}</option>'.format(i, n)
-                    for i, n in enumerate(table_names)
-                )
-                launcher = (
-                    '<!DOCTYPE html><html><head>'
-                    '<style>'
-                    'body{margin:0;background:#1e1e2e;font-family:sans-serif}'
-                    '#sel{position:fixed;top:0;left:0;right:0;z-index:10;'
-                    'background:#252536;padding:6px 12px}'
-                    '#sel select{font-size:13px;padding:2px 8px}'
-                    'iframe{position:absolute;top:40px;left:0;width:100%;'
-                    'height:calc(100vh - 40px);border:none;overflow:hidden}'
-                    '</style></head><body>'
-                    '<div id="sel"><select onchange="'
-                    "document.getElementById('f').src=this.value"
-                    '">'
-                    + options +
-                    '</select></div>'
-                    '<iframe id="f" scrolling="no" src="/table/0"></iframe>'
-                    '</body></html>'
-                )
-
-                class _Handler(BaseHTTPRequestHandler):
-                    def do_GET(self_inner):
-                        path = self_inner.path
-                        if path == "/":
-                            self_inner.send_response(200)
-                            self_inner.send_header("Content-type", "text/html")
-                            self_inner.end_headers()
-                            self_inner.wfile.write(launcher.encode("utf-8"))
-                            return
-                        if path == "/gw.js":
-                            self_inner.send_response(200)
-                            self_inner.send_header(
-                                "Content-type", "application/javascript"
-                            )
-                            self_inner.end_headers()
-                            self_inner.wfile.write(gw_js.encode("utf-8"))
-                            return
-                        for i, page in enumerate(table_pages):
-                            if path == f"/table/{i}":
-                                self_inner.send_response(200)
-                                self_inner.send_header("Content-type", "text/html")
-                                self_inner.end_headers()
-                                self_inner.wfile.write(page.encode("utf-8"))
-                                return
-                        self_inner.send_error(404)
-
-                    def do_POST(self_inner):
-                        for i, walker in enumerate(walkers):
-                            if self_inner.path == f"/table/{i}/comm":
-                                length = int(
-                                    self_inner.headers.get("Content-Length", 0)
-                                )
-                                body = self_inner.rfile.read(length).decode("utf-8")
-                                payload = json.loads(body)
-                                result = walker.comm._receive_msg(
-                                    payload["action"], payload["data"]
-                                )
-                                self_inner.send_response(200)
-                                self_inner.send_header(
-                                    "Content-type", "application/json"
-                                )
-                                self_inner.end_headers()
-                                self_inner.wfile.write(
-                                    json.dumps(
-                                        result, cls=DataFrameEncoder
-                                    ).encode("utf-8")
-                                )
-                                return
-                        self_inner.send_error(404)
-
-                    def log_message(self_inner, *args):
-                        pass
-
-                port = find_free_port()
-                with CustomTCPServer(("127.0.0.1", port), _Handler) as httpd:
-                    self._pygwalker_server = httpd
-                    self._pygwalker_ready.set()
-                    import webbrowser
-                    webbrowser.open(f"http://localhost:{port}")
-                    httpd.serve_forever()
-            except Exception as e:
-                self._pygwalker_ready.set()
-                print(f"PyGwalker error: {e}")
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        self._pygwalker_ready.wait(timeout=10)
-        if self._pygwalker_server is None:
-            self._data_view.set_pygwalker_running(False)
-
-    def _on_pygwalker_stop(self) -> None:
-        self._stop_pygwalker_server()
-        self._data_view.set_pygwalker_running(False)
-
-
-    def _stop_pygwalker_server(self) -> None:
-        if self._pygwalker_server is not None:
-            try:
-                self._pygwalker_server.shutdown()
             except Exception:
-                pass
-            self._pygwalker_server = None
+                import traceback
+                traceback.print_exc()
+
+        threading.Thread(target=_serve, daemon=True).start()
 
     # ── Grid Handlers ────────────────────────────────────────────────────────
 

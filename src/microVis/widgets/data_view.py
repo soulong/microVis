@@ -73,7 +73,6 @@ class DataView(QWidget):
 
     dataset_browse_clicked = Signal()
     pygwalker_open_clicked = Signal()
-    pygwalker_stop_clicked = Signal()
     metadata_browse_clicked = Signal()
     metadata_merge_clicked = Signal()
     metadata_clear_clicked = Signal()
@@ -108,13 +107,6 @@ class DataView(QWidget):
         self._btn_pgw_open.setEnabled(False)
         self._btn_pgw_open.clicked.connect(self.pygwalker_open_clicked)
         row1.addWidget(self._btn_pgw_open)
-
-        self._btn_pgw_stop = QPushButton("Stop PyGwalker")
-        self._btn_pgw_stop.setProperty("class", "primary")
-        self._btn_pgw_stop.setFixedHeight(12)
-        self._btn_pgw_stop.setEnabled(False)
-        self._btn_pgw_stop.clicked.connect(self.pygwalker_stop_clicked)
-        row1.addWidget(self._btn_pgw_stop)
         layout.addLayout(row1)
 
         # ── Row 2: Metadata browse + Merge/Clear/Write ──
@@ -247,11 +239,6 @@ class DataView(QWidget):
 
     def set_pygwalker_buttons(self, has_tables: bool) -> None:
         self._btn_pgw_open.setEnabled(has_tables)
-        self._btn_pgw_stop.setEnabled(False)
-
-    def set_pygwalker_running(self, running: bool) -> None:
-        self._btn_pgw_open.setEnabled(not running)
-        self._btn_pgw_stop.setEnabled(running)
 
     def _on_write_to_db(self) -> None:
         reply = QMessageBox.question(

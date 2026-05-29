@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -52,19 +53,30 @@ class _MultiSelectCombo(QWidget):
         header.addStretch()
         layout.addLayout(header)
 
-        # Checkboxes in a horizontal row
-        self._checks_layout = QHBoxLayout()
+        # Checkboxes in a scrollable horizontal row
+        checks_scroll = QScrollArea()
+        checks_scroll.setWidgetResizable(True)
+        checks_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        checks_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        checks_scroll.setMaximumHeight(24)
+        checks_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        checks_inner = QWidget()
+        self._checks_layout = QHBoxLayout(checks_inner)
         self._checks_layout.setSpacing(4)
         self._checks_layout.setContentsMargins(0, 0, 0, 0)
         self._checkboxes: dict[str, QCheckBox] = {}
         for i, item_text in enumerate(items):
             cb = QCheckBox(item_text)
+            cb.setStyleSheet("QCheckBox { font-size: 7pt; spacing: 2px; } QCheckBox::indicator { width: 12px; height: 12px; }")
             cb.setChecked(i == 0 if checked_first else True)
             cb.toggled.connect(lambda: self.selection_changed.emit())
             self._checks_layout.addWidget(cb)
             self._checkboxes[item_text] = cb
         self._checks_layout.addStretch()
-        layout.addLayout(self._checks_layout)
+
+        checks_scroll.setWidget(checks_inner)
+        layout.addWidget(checks_scroll)
 
     def get_selected(self) -> list[str]:
         return [t for t, cb in self._checkboxes.items() if cb.isChecked()]
@@ -85,6 +97,7 @@ class ImageControls(QScrollArea):
     image_size_changed = Signal()
     channel_config_changed = Signal()
     reset_requested = Signal()
+    sort_mode_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -99,6 +112,8 @@ class ImageControls(QScrollArea):
                 min-height: 18px;
                 max-height: 22px;
                 font-size: 8pt;
+                padding: 2px 3px;
+                min-width: 0;
             }
             QLabel {
                 font-size: 8pt;
@@ -134,10 +149,11 @@ class ImageControls(QScrollArea):
         def _row(label_text, widget):
             r = QHBoxLayout()
             r.setSpacing(4)
+            r.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label_text)
             lbl.setFixedWidth(52)
             r.addWidget(lbl)
-            r.addWidget(widget, stretch=1)
+            r.addWidget(widget)
             self._layout.addLayout(r)
 
         # Low / High
@@ -151,6 +167,7 @@ class ImageControls(QScrollArea):
         self._auto_low.setValue(0.01)
         self._auto_low.setDecimals(2)
         self._auto_low.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self._auto_low.setFixedWidth(80)
         lowhigh_row.addWidget(self._auto_low)
         lbl_hi = QLabel("High")
         lbl_hi.setFixedWidth(28)
@@ -160,6 +177,7 @@ class ImageControls(QScrollArea):
         self._auto_high.setValue(99.99)
         self._auto_high.setDecimals(2)
         self._auto_high.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self._auto_high.setFixedWidth(80)
         lowhigh_row.addWidget(self._auto_high)
         self._layout.addLayout(lowhigh_row)
 
@@ -190,13 +208,33 @@ class ImageControls(QScrollArea):
         self._image_size.setDecimals(0)
         self._image_size.setSingleStep(10)
         self._image_size.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self._image_size.setFixedWidth(80)
         self._image_size.valueChanged.connect(lambda: self.image_size_changed.emit())
         _row("Img size", self._image_size)
 
         # Contrast
         self._contrast = NoScrollComboBox()
+        self._contrast.setFixedWidth(80)
         self._contrast.addItems(CONTRAST_METHODS)
         _row("Transform", self._contrast)
+
+        # Sort mode
+        sort_row = QHBoxLayout()
+        sort_row.setSpacing(4)
+        sort_row.setContentsMargins(0, 0, 0, 0)
+        sort_lbl = QLabel("Sort well")
+        sort_lbl.setFixedWidth(52)
+        sort_row.addWidget(sort_lbl)
+        self._sort_by_col = QRadioButton("By Col")
+        self._sort_by_col.setStyleSheet("font-size: 8pt; spacing: 4px;")
+        self._sort_by_col.toggled.connect(lambda: self.sort_mode_changed.emit())
+        sort_row.addWidget(self._sort_by_col)
+        self._sort_by_row = QRadioButton("By Row")
+        self._sort_by_row.setChecked(True)
+        self._sort_by_row.setStyleSheet("font-size: 8pt; spacing: 4px;")
+        self._sort_by_row.toggled.connect(lambda: self.sort_mode_changed.emit())
+        sort_row.addWidget(self._sort_by_row)
+        self._layout.addLayout(sort_row)
 
         self._gamma_slider = NoScrollSlider(Qt.Horizontal)
         self._gamma_slider.setRange(10, 300)
@@ -217,6 +255,7 @@ class ImageControls(QScrollArea):
         self._section("Object Overlay")
 
         self._overlay_col = NoScrollComboBox()
+        self._overlay_col.setFixedWidth(80)
         self._overlay_col.setEditable(True)
         self._overlay_col.setInsertPolicy(QComboBox.NoInsert)
         self._overlay_col.completer().setFilterMode(Qt.MatchContains)
@@ -225,6 +264,7 @@ class ImageControls(QScrollArea):
         _row("Color by", self._overlay_col)
 
         self._overlay_cmap = NoScrollComboBox()
+        self._overlay_cmap.setFixedWidth(80)
         _row("Colors", self._overlay_cmap)
 
         self._overlay_alpha = NoScrollSlider(Qt.Horizontal)
@@ -331,6 +371,10 @@ class ImageControls(QScrollArea):
     @property
     def overlay_alpha(self) -> NoScrollSlider:
         return self._overlay_alpha
+
+    @property
+    def sort_by_row(self) -> QRadioButton:
+        return self._sort_by_row
 
     @property
     def fields_widget(self) -> _MultiSelectCombo | None:

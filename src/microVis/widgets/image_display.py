@@ -166,8 +166,12 @@ class _ThumbnailView(QGraphicsView):
             super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
-        self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+        self.reset_zoom()
         event.accept()
+
+    def reset_zoom(self) -> None:
+        self.resetTransform()
+        self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
 
     def get_view_state(self) -> dict:
         return {
@@ -199,20 +203,26 @@ class ImageDisplay(QScrollArea):
         self._layout.addStretch()
         self.setWidget(container)
 
+        # Result cache for sort/resize without reprocessing
+        self._results_cache: list[dict] = []
+        self._cached_thumb_size: int = 0
+        # Incremental display tracking: group_key → (row_widget, h_layout)
+        self._row_widgets: dict = {}
+
     def save_view_state(self) -> dict:
-        state = {}
+        return self._save_current_view_state()
+
+    def clear(self) -> None:
+        self._clear_layout()
+
+    def reset_all_zoom(self) -> None:
+        """Reset zoom on all visible thumbnails."""
         for i in range(self._layout.count()):
             item = self._layout.itemAt(i)
             if item is None or not item.widget():
                 continue
-            row_widget = item.widget()
-            for child in row_widget.findChildren(_ThumbnailView):
-                key = (child._well, child._field, child._stack, child._tp)
-                state[key] = child.get_view_state()
-        return state
-
-    def clear(self) -> None:
-        self._clear_layout()
+            for thumb in item.widget().findChildren(_ThumbnailView):
+                thumb.reset_zoom()
 
     def show_loading(self, count: int) -> None:
         self._clear_layout()
@@ -221,6 +231,136 @@ class ImageDisplay(QScrollArea):
         lbl.setAlignment(Qt.AlignCenter)
         self._layout.insertWidget(0, lbl)
 
+    def begin_results(self, thumb_size: int) -> None:
+        """Clear display and prepare for progressive thumbnail insertion."""
+        self._clear_layout()
+        self._results_cache = []
+        self._cached_thumb_size = thumb_size
+        self._row_widgets = {}
+
+    def add_result(self, result: dict, thumb_size: int, overlay_alpha: float,
+                   overlay_cmap: str, saved_state: dict | None,
+                   sort_by_row: bool) -> None:
+        """Incrementally insert a single result as a thumbnail."""
+        self._results_cache.append(result)
+
+        # Determine grouping key
+        if not sort_by_row:
+            group_key = result["well"]
+        else:
+            group_key = (result["field"], result["stack"], result["tp"])
+
+        # Remove trailing stretch
+        if self._layout.count() > 0:
+            last = self._layout.itemAt(self._layout.count() - 1)
+            if last and last.spacerItem():
+                self._layout.takeAt(self._layout.count() - 1)
+
+        # Find or create row widget
+        if group_key not in self._row_widgets:
+            row_widget = QWidget()
+            row_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            self._row_widgets[group_key] = (row_widget, row)
+            self._layout.addWidget(row_widget)
+        else:
+            row_widget, row = self._row_widgets[group_key]
+
+        # Insert thumbnail (before the trailing stretch in the row)
+        self._add_thumbnail_column(row, result, thumb_size, overlay_alpha,
+                                   overlay_cmap, saved_state)
+
+        # Re-add trailing stretch
+        self._layout.addStretch()
+
+    def _rebuild_display(self, thumb_size, overlay_alpha, overlay_cmap,
+                         saved_state, sort_by_row):
+        """Rebuild the entire display from cached results."""
+        old_state = self._save_current_view_state()
+
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item is None:
+                continue
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+            elif item.layout():
+                self._clear_sub_layout(item.layout())
+        self._row_widgets = {}
+
+        if old_state:
+            if saved_state:
+                old_state.update(saved_state)
+            saved_state = old_state
+
+        from collections import defaultdict
+
+        results = self._results_cache
+
+        if not sort_by_row:
+            groups = defaultdict(list)
+            for r in results:
+                groups[r["well"]].append(r)
+            for well in sorted(groups.keys()):
+                row_widget = QWidget()
+                row_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+                row = QHBoxLayout(row_widget)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(6)
+                self._row_widgets[well] = (row_widget, row)
+                for r in groups[well]:
+                    self._add_thumbnail_column(row, r, thumb_size, overlay_alpha,
+                                               overlay_cmap, saved_state)
+                row.addStretch()
+                self._layout.addWidget(row_widget)
+        else:
+            combos_set = set()
+            wells_set = set()
+            for r in results:
+                combos_set.add((r["field"], r["stack"], r["tp"]))
+                wells_set.add(r["well"])
+            combos = sorted(combos_set)
+            wells = sorted(wells_set)
+            idx = defaultdict(list)
+            for r in results:
+                idx[(r["well"], r["field"], r["stack"], r["tp"])].append(r)
+            for combo in combos:
+                field, stack, tp = combo
+                row_widget = QWidget()
+                row_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+                row = QHBoxLayout(row_widget)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(6)
+                self._row_widgets[combo] = (row_widget, row)
+                for well in wells:
+                    matching = idx.get((well, field, stack, tp), [])
+                    if matching:
+                        self._add_thumbnail_column(row, matching[0], thumb_size,
+                                                   overlay_alpha, overlay_cmap, saved_state)
+                row.addStretch()
+                self._layout.addWidget(row_widget)
+
+        has_polygons = any(r.get("polygons") for r in results)
+        if has_polygons:
+            cbar_widget = _create_colorbar_widget(overlay_cmap)
+            self._layout.addWidget(cbar_widget)
+        self._layout.addStretch()
+
+    def _save_current_view_state(self) -> dict:
+        """Save view state of currently visible thumbnails."""
+        state = {}
+        for i in range(self._layout.count()):
+            item = self._layout.itemAt(i)
+            if item is None or not item.widget():
+                continue
+            for child in item.widget().findChildren(_ThumbnailView):
+                key = (child._well, child._field, child._stack, child._tp)
+                state[key] = child.get_view_state()
+        return state
+
     def show_results(
         self,
         results: list,
@@ -228,65 +368,57 @@ class ImageDisplay(QScrollArea):
         overlay_cmap: str = "Viridis",
         thumb_size: int = 210,
         saved_state: dict | None = None,
+        sort_by_row: bool = False,
     ) -> None:
-        self._clear_layout()
+        """Show all results. Also caches them for sort/resize without reprocessing."""
+        self._results_cache = list(results)
+        self._cached_thumb_size = thumb_size
+        self._rebuild_display(thumb_size, overlay_alpha, overlay_cmap,
+                              saved_state, sort_by_row)
 
-        # Group by well
-        from collections import defaultdict
-        groups = defaultdict(list)
-        for r in results:
-            groups[r["well"]].append(r)
+    def resort_cached(self, thumb_size, overlay_alpha, overlay_cmap,
+                      saved_state, sort_by_row) -> bool:
+        """Re-sort cached results without reprocessing. Returns True if cache was usable."""
+        if not self._results_cache:
+            return False
+        self._rebuild_display(thumb_size, overlay_alpha, overlay_cmap,
+                              saved_state, sort_by_row)
+        return True
 
-        for well in sorted(groups.keys()):
-            # Thumbnail row
-            row_widget = QWidget()
-            row_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            row = QHBoxLayout(row_widget)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
-            for r in groups[well]:
-                col = QVBoxLayout()
-                col.setSpacing(2)
-                col.setContentsMargins(0, 0, 0, 0)
+    def _add_thumbnail_column(self, row, r, thumb_size, overlay_alpha, overlay_cmap,
+                               saved_state):
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.setContentsMargins(0, 0, 0, 0)
 
-                meta = QLabel(f"{well} f{r['field']} z{r['stack']} t{r['tp']}")
-                meta.setStyleSheet("color: #aaaaaa; font-size: 8pt;")
-                meta.setAlignment(Qt.AlignCenter)
-                col.addWidget(meta)
+        meta = QLabel(f"{r['well']} f{r['field']} z{r['stack']} t{r['tp']}")
+        meta.setStyleSheet("color: #aaaaaa; font-size: 8pt;")
+        meta.setAlignment(Qt.AlignCenter)
+        col.addWidget(meta)
 
-                thumb = _ThumbnailView(
-                    r["rgb"],
-                    r["well"],
-                    r["field"],
-                    r["stack"],
-                    r["tp"],
-                    r.get("polygons"),
-                    overlay_alpha,
-                    overlay_cmap,
-                    r.get("overlay_val"),
-                    r.get("overlay_col"),
-                    r.get("n_objects"),
-                    r.get("mask"),
-                    r.get("obj_values"),
-                    thumb_size,
-                )
-                thumb.pixel_clicked.connect(self.pixel_clicked)
-                if saved_state:
-                    key = (r["well"], r["field"], r["stack"], r["tp"])
-                    if key in saved_state:
-                        thumb.restore_view_state(saved_state[key])
-                col.addWidget(thumb)
-                row.addLayout(col)
-            row.addStretch()
-            self._layout.addWidget(row_widget)
-
-        # Object color mapping colorbar
-        has_polygons = any(r.get("polygons") for r in results)
-        if has_polygons:
-            cbar_widget = _create_colorbar_widget(overlay_cmap)
-            self._layout.addWidget(cbar_widget)
-
-        self._layout.addStretch()
+        thumb = _ThumbnailView(
+            r["rgb"],
+            r["well"],
+            r["field"],
+            r["stack"],
+            r["tp"],
+            r.get("polygons"),
+            overlay_alpha,
+            overlay_cmap,
+            r.get("overlay_val"),
+            r.get("overlay_col"),
+            r.get("n_objects"),
+            r.get("mask"),
+            r.get("obj_values"),
+            thumb_size,
+        )
+        thumb.pixel_clicked.connect(self.pixel_clicked)
+        if saved_state:
+            key = (r["well"], r["field"], r["stack"], r["tp"])
+            if key in saved_state:
+                thumb.restore_view_state(saved_state[key])
+        col.addWidget(thumb)
+        row.addLayout(col)
 
     def _clear_layout(self) -> None:
         while self._layout.count():

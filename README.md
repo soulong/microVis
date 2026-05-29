@@ -1,15 +1,16 @@
 # microVis
 
-![Python Version](https://shields.io)
-![Latest Release](https://shields.io)
-![License](https://shields.io)
+[![Package Version](https://shields.io)](https://github.com)
+[![Latest Release](https://shields.io)](https://github.com)
+![Python Version](https://shields.io)(https://github.com)
+[![License](https://shields.io)](https://github.com)
 
 Interactive desktop GUI for visualizing microProfiler microscopy datasets — plate grids, multi-channel images, and profiling data.
 
 ## Requirements
 
 - **Python** >= 3.10
-- **OS**: Windows 10/11 (64-bit) recommended
+- **OS**: Only Windows 11 (64-bit) was tested
 
 ## Installation
 

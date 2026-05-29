@@ -43,7 +43,8 @@ def test_composite_disabled_channel():
 
 def test_composite_output_is_uint8():
     img = np.random.rand(8, 8, 1).astype(np.float64)
-    result = composite_image(img, ["ch1"], {"ch1": {"enabled": True, "color": "blue", "vmin": 0, "vmax": 1}})
+    config = {"ch1": {"enabled": True, "color": "blue", "vmin": 0, "vmax": 1}}
+    result = composite_image(img, ["ch1"], config)
     assert result.dtype == np.uint8
     assert result.min() >= 0
     assert result.max() <= 255

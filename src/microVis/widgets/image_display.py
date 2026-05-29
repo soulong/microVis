@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import numpy as np
 import matplotlib
+import numpy as np
+
 matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -337,7 +338,7 @@ def _draw_polygon_overlays(
     rng = np.random.RandomState(42)
     gold_pen = QPen(QColor(0xFF, 0xD7, 0x00), 1.0)
 
-    for label_val, contour in polygons:
+    for _label_val, contour in polygons:
         if len(contour) < 3:
             continue
 

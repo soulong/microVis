@@ -4,7 +4,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -14,10 +13,6 @@ from PySide6.QtWidgets import (
 )
 
 from microVis.widgets._event_filter import NoScrollComboBox
-
-
-
-
 
 
 class WellGridControls(QScrollArea):

@@ -39,7 +39,7 @@ QUALITATIVE_PALETTES = [
 AGG_METHODS = ["mean", "sum", "std"]
 
 # Contrast methods
-CONTRAST_METHODS = ["none", "invert", "gamma", "histogram_equalization", "clahe"]
+CONTRAST_METHODS = ["none", "invert", "gamma", "histogram_equalization"]
 
 # Image dtype → max pixel value
 DTYPE_MAX = {

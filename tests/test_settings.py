@@ -4,7 +4,6 @@ from __future__ import annotations
 from microVis._settings import (
     AGG_METHODS,
     CMAP_OPTIONS,
-    CONTRAST_METHODS,
     DEFAULT_CMAP,
     DEFAULT_PLATE,
     DTYPE_MAX,
@@ -22,14 +21,11 @@ def test_default_plate_in_formats():
 
 
 def test_plate_format_values_are_tuples():
-    for name, dims in PLATE_FORMATS.items():
+    for _name, dims in PLATE_FORMATS.items():
         assert isinstance(dims, tuple)
         assert len(dims) == 2
         assert dims[0] > 0 and dims[1] > 0
 
-
-def test_contrast_methods_include_clahe():
-    assert "clahe" in CONTRAST_METHODS
 
 
 def test_dtype_max_covers_common_types():

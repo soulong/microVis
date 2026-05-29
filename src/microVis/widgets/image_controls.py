@@ -8,17 +8,15 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from microVis._settings import CMAP_OPTIONS, CONTRAST_METHODS, DEFAULT_CMAP
-from microVis.widgets.channel_controls import ChannelControls
+from microVis._settings import CONTRAST_METHODS
 from microVis.widgets._event_filter import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSlider
+from microVis.widgets.channel_controls import ChannelControls
 
 
 class _MultiSelectCombo(QWidget):

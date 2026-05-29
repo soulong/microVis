@@ -5,8 +5,6 @@ from natsort import natsort_key
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QComboBox,
-    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -31,10 +29,10 @@ class _PandasTableModel(QAbstractTableModel):
         self._df = df
         self.endResetModel()
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(self, parent: QModelIndex | None = None) -> int:
         return len(self._df)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(self, parent: QModelIndex | None = None) -> int:
         return len(self._df.columns)
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
@@ -60,12 +58,12 @@ class _NatSortProxyModel(QSortFilterProxyModel):
     """Proxy model with natural sorting (numbers sort correctly)."""
 
     def lessThan(self, left, right):
-        l = self.sourceModel().data(left, Qt.DisplayRole)
-        r = self.sourceModel().data(right, Qt.DisplayRole)
+        left_val = self.sourceModel().data(left, Qt.DisplayRole)
+        right_val = self.sourceModel().data(right, Qt.DisplayRole)
         try:
-            return float(l) < float(r)
+            return float(left_val) < float(right_val)
         except (ValueError, TypeError):
-            return natsort_key(str(l)) < natsort_key(str(r))
+            return natsort_key(str(left_val)) < natsort_key(str(right_val))
 
 
 class DataView(QWidget):
@@ -89,7 +87,7 @@ class DataView(QWidget):
         # ── Row 1: Dataset browse + PyGwalker ──
         row1 = QHBoxLayout()
         row1.setAlignment(Qt.AlignBottom)
-        self._btn_dataset_browse = QPushButton("Browse")
+        self._btn_dataset_browse = QPushButton("Select Dataset")
         self._btn_dataset_browse.setProperty("class", "primary")
         self._btn_dataset_browse.setFixedHeight(12)
         self._btn_dataset_browse.clicked.connect(self.dataset_browse_clicked)
@@ -112,7 +110,7 @@ class DataView(QWidget):
         # ── Row 2: Metadata browse + Merge/Clear/Write ──
         row2 = QHBoxLayout()
         row2.setAlignment(Qt.AlignBottom)
-        self._btn_meta_browse = QPushButton("Metadata")
+        self._btn_meta_browse = QPushButton("Select Metadata")
         self._btn_meta_browse.setProperty("class", "primary")
         self._btn_meta_browse.setFixedHeight(12)
         self._btn_meta_browse.clicked.connect(self.metadata_browse_clicked)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -30,12 +30,12 @@ class DataModule:
 
     def __init__(self, measurement_dir: str):
         self._root_dir = Path(measurement_dir)
-        self._image_dir: Optional[Path] = None
+        self._image_dir: Path | None = None
         self._dataset: Any = None
-        self._db_conn: Optional[sqlite3.Connection] = None
+        self._db_conn: sqlite3.Connection | None = None
         self._db_tables: dict[str, dict[str, str]] = {}
-        self._metadata: Optional[pd.DataFrame] = None
-        self._img_dtype_cache: Optional[str] = None
+        self._metadata: pd.DataFrame | None = None
+        self._img_dtype_cache: str | None = None
         self._ready = False
 
         self._init_dataset()
@@ -146,7 +146,7 @@ class DataModule:
                 result.append((cname, ctype, is_num))
         return result
 
-    def get_table_df(self, table: str) -> Optional[pd.DataFrame]:
+    def get_table_df(self, table: str) -> pd.DataFrame | None:
         if self._db_conn is None:
             return None
         try:
@@ -220,8 +220,8 @@ class DataModule:
         return self._dataset.get_imageset(row_idx)
 
     def get_imageset_with_masks(
-        self, row_idx: int, channels: Optional[list[str]] = None,
-        masks: Optional[list[str]] = None,
+        self, row_idx: int, channels: list[str] | None = None,
+        masks: list[str] | None = None,
     ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
         return self._dataset.get_imageset(row_idx, channels=channels, masks=masks)
 

@@ -4,8 +4,7 @@ import threading
 from pathlib import Path
 
 import pandas as pd
-
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
 from microVis._settings import (
     AGG_METHODS,
     CMAP_OPTIONS,
-    CONTRAST_METHODS,
     DEFAULT_CHANNEL_COLORS,
     DEFAULT_CMAP,
     DEFAULT_PLATE,
@@ -28,16 +26,19 @@ from microVis._settings import (
     QUALITATIVE_PALETTES,
 )
 from microVis.io.data_module import DataModule
+from microVis.log_utils import get_logger
 from microVis.processing.compositing import composite_image
-from microVis.processing.contrast import apply_contrast, invert_image
+from microVis.processing.contrast import apply_contrast
 from microVis.processing.overlay import extract_polygons
+from microVis.widgets._event_filter import RotatedLabel
 from microVis.widgets.data_view import DataView
 from microVis.widgets.image_controls import ImageControls
 from microVis.widgets.image_display import ImageDisplay
 from microVis.widgets.pixel_info import PixelInfo
 from microVis.widgets.well_grid_canvas import WellGridCanvas
-from microVis.widgets._event_filter import RotatedLabel
 from microVis.widgets.well_grid_controls import WellGridControls
+
+_log = get_logger("microVis.main_window")
 
 
 
@@ -61,9 +62,6 @@ class MainWindow(QMainWindow):
         self._ch_config: dict = {}
 
         # Image display params
-        self._image_fields: list[str] = []
-        self._image_stacks: list[str] = []
-        self._image_tps: list[str] = []
         self._contrast_method: str = "none"
         self._contrast_gamma: float = 1.0
         self._invert: bool = False
@@ -270,6 +268,7 @@ class MainWindow(QMainWindow):
         try:
             self._dm = DataModule(str(p))
         except Exception:
+            _log.exception("Failed to load dataset from %s", p)
             return
 
         self._dataset_dir = str(p)
@@ -284,7 +283,6 @@ class MainWindow(QMainWindow):
         )
 
         # Init selection (no wells selected by default)
-        all_wells = self._dm.get_wells()
         self._selected_wells = set()
 
         # Init channel config
@@ -346,14 +344,13 @@ class MainWindow(QMainWindow):
             p_lo = float(np.percentile(all_pixels, low_pct))
             p_hi = float(np.percentile(all_pixels, high_pct))
         except Exception:
-            pass
+            _log.warning("Auto-range percentile computation failed", exc_info=True)
         return p_lo, p_hi
 
     # ── Populate Controls ────────────────────────────────────────────────────
 
     def _populate_grid_controls(self) -> None:
         gw = self._grid_controls
-        gm = self._dm
 
         # Plate formats
         gw.plate_format.blockSignals(True)
@@ -393,7 +390,7 @@ class MainWindow(QMainWindow):
         tables = self._dm.get_profiling_tables()
         for tname in tables:
             cols = self._dm.get_profiling_columns(tname)
-            for name, ctype, is_num in cols:
+            for name, _ctype, is_num in cols:
                 gw.column.addItem(f"{tname}/{name}", (tname, name, is_num))
         # Add merged metadata columns
         if self._metadata_merged is not None:
@@ -426,7 +423,7 @@ class MainWindow(QMainWindow):
         tables = dm.get_profiling_tables()
         for tname in tables:
             cols = dm.get_profiling_columns(tname)
-            for name, ctype, is_num in cols:
+            for name, _ctype, _is_num in cols:
                 ic.overlay_col.addItem(f"{tname}/{name}", (tname, name))
         ic.overlay_col.blockSignals(False)
 
@@ -461,10 +458,10 @@ class MainWindow(QMainWindow):
         try:
             from microVis.io.data_module import parse_plate_metadata
             self._metadata_df = parse_plate_metadata(path)
-            self._metadata_path = str(path)
             self._data_view.set_metadata_label(Path(path).name)
 
         except Exception:
+            _log.exception("Failed to load metadata from %s", path)
             self._metadata_df = None
             self._data_view.set_metadata_label(None)
 
@@ -517,7 +514,7 @@ class MainWindow(QMainWindow):
             conn.close()
 
         except Exception:
-            pass
+            _log.exception("Failed to write metadata to database")
 
     def _refresh_data_table(self) -> None:
         if self._current_table:
@@ -598,11 +595,14 @@ class MainWindow(QMainWindow):
 
         # Pre-compute metadata data_map for grid (metadata isn't in the DB)
         metadata_map: dict[str, float | str] | None = None
-        if table_name == "metadata" and self._metadata_merged is not None:
-            if col_name in self._metadata_merged.columns:
-                metadata_map = dict(
-                    zip(self._metadata_merged["well"], self._metadata_merged[col_name])
-                )
+        if (
+            table_name == "metadata"
+            and self._metadata_merged is not None
+            and col_name in self._metadata_merged.columns
+        ):
+            metadata_map = dict(
+                zip(self._metadata_merged["well"], self._metadata_merged[col_name], strict=True)
+            )
 
         self._grid_canvas.update_grid(
             self._dm,
@@ -627,11 +627,11 @@ class MainWindow(QMainWindow):
         ic = self._image_controls
         low_pct = ic.auto_low.value()
         high_pct = ic.auto_high.value()
-        p1, p99 = self._auto_range(low_pct, high_pct)
         for ch, cfg in self._ch_config.items():
             if cfg.get("enabled", True):
-                cfg["vmin"] = p1
-                cfg["vmax"] = p99
+                p_lo, p_hi = self._auto_range(low_pct, high_pct, ch_name=ch)
+                cfg["vmin"] = p_lo
+                cfg["vmax"] = p_hi
         self._image_controls.update_channel_values(self._ch_config)
         self._schedule_image_refresh()
 
@@ -699,8 +699,9 @@ class MainWindow(QMainWindow):
         if self._overlay_col and self._overlay_table:
             if self._overlay_table == "metadata" and self._metadata_merged is not None:
                 if self._overlay_col in self._metadata_merged.columns:
+                    meta = self._metadata_merged
                     overlay_values = dict(
-                        zip(self._metadata_merged["well"], self._metadata_merged[self._overlay_col])
+                        zip(meta["well"], meta[self._overlay_col], strict=True)
                     )
             else:
                 try:
@@ -708,7 +709,7 @@ class MainWindow(QMainWindow):
                         self._overlay_table, self._overlay_col, "mean"
                     )
                 except Exception:
-                    pass
+                    _log.warning("Failed to aggregate overlay values", exc_info=True)
 
         # Pre-compute object counts per well and per-object values
         object_counts: dict[str, int] = {}
@@ -722,7 +723,7 @@ class MainWindow(QMainWindow):
                     if df is not None:
                         object_counts = df.groupby("well")["label"].nunique().to_dict()
                 except Exception:
-                    pass
+                    _log.warning("Failed to compute object counts", exc_info=True)
                 break
 
         # Per-object value mapping: well → {label → value}
@@ -733,9 +734,11 @@ class MainWindow(QMainWindow):
                 odf = self._dm.get_table_df(object_table)
                 if odf is not None and "label" in odf.columns and self._overlay_col in odf.columns:
                     for well, wdf in odf.groupby("well"):
-                        per_object_values[well] = dict(zip(wdf["label"].astype(int), wdf[self._overlay_col]))
+                        per_object_values[well] = dict(zip(
+                            wdf["label"].astype(int), wdf[self._overlay_col], strict=True
+                        ))
             except Exception:
-                pass
+                _log.warning("Failed to compute per-object overlay values", exc_info=True)
         fields_int = [int(f) for f in fields]
         stacks_int = [int(s) for s in stacks]
         tps_int = [int(t) for t in tps]
@@ -763,7 +766,6 @@ class MainWindow(QMainWindow):
                 img_data, mask_dict = self._dm.get_imageset(row_idx)
 
                 # Per-channel contrast
-                n_ch = img_data.shape[2]
                 enhanced = np.zeros_like(img_data, dtype=np.float64)
                 for ch_idx, ch_name in enumerate(channel_names):
                     ch_cfg = self._ch_config.get(ch_name, {})
@@ -809,7 +811,7 @@ class MainWindow(QMainWindow):
                 # Keep UI responsive during long loads
                 QApplication.processEvents()
             except Exception:
-                pass
+                _log.warning("Failed to process image row", exc_info=True)
 
         if results:
             thumb_size = int(self._image_controls.image_size.value())
@@ -839,7 +841,7 @@ class MainWindow(QMainWindow):
                     parts.append(f"| {ch}: {val:.1f}")
             self._pixel_info.set_text("  ".join(parts))
         except Exception:
-            pass
+            _log.warning("Failed to read pixel info", exc_info=True)
 
     # ── Data View Handler ────────────────────────────────────────────────────
 
@@ -853,7 +855,7 @@ class MainWindow(QMainWindow):
                 df = self._join_metadata(df)
             self._data_view.set_dataframe(df)
         except Exception:
-            pass
+            _log.warning("Failed to load data table %s", table_name, exc_info=True)
 
     def _join_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
         meta_cols = [c for c in self._metadata_merged.columns if c != "well"]

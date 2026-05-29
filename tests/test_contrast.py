@@ -26,14 +26,6 @@ def test_apply_contrast_histogram_equalization():
     assert result.shape == img.shape
 
 
-def test_apply_contrast_clahe():
-    img = np.random.rand(10, 10)
-    result = apply_contrast(img, "clahe", kernel_size=51)
-    assert result.shape == img.shape
-    assert result.min() >= 0.0
-    assert result.max() <= 1.0
-
-
 def test_invert_image_float():
     img = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
     result = invert_image(img)

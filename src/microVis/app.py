@@ -1,10 +1,10 @@
 """QApplication bootstrap for the microVis desktop GUI."""
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QTimer
 from PySide6.QtGui import QColor, QIcon, QPalette
-from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QComboBox
 
 from microVis.log_utils import setup_logging
 

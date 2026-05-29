@@ -1,8 +1,8 @@
 """CLI entry point for the microVis desktop application.
 
 Usage:
-    microvis-gui                          # Launch with folder selector
-    microvis-gui /path/to/measurement     # Launch directly with a dataset
+    microvis                          # Launch with folder selector
+    microvis /path/to/measurement     # Launch directly with a dataset
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def main() -> None:
     from microVis import __version__
 
     parser = argparse.ArgumentParser(
-        prog="microvis-gui",
+        prog="microvis",
         description="microVis -- interactive visualization for microProfiler microscopy datasets",
     )
     parser.add_argument(

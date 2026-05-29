@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import matplotlib
+
 matplotlib.use("QtAgg")
 
-import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.cm import ScalarMappable
 from matplotlib.figure import Figure

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 from microVis._settings import CHANNEL_COLORS, DEFAULT_CHANNEL_COLORS
@@ -11,8 +9,8 @@ def composite_image(
     image_data: np.ndarray,
     channel_names: list[str],
     channel_config: dict[str, dict],
-    mask_data: Optional[np.ndarray] = None,
-    mask_colors: Optional[dict[int, tuple[float, float, float]]] = None,
+    mask_data: np.ndarray | None = None,
+    mask_colors: dict[int, tuple[float, float, float]] | None = None,
     mask_alpha: float = 0.3,
 ) -> np.ndarray:
     """Composite multi-channel image data into 8-bit RGB.
@@ -79,7 +77,6 @@ def composite_image(
 
 
 def _default_color(idx: int) -> str:
-    colors = list(CHANNEL_COLORS.keys())
     default_order = DEFAULT_CHANNEL_COLORS
     if idx < len(default_order):
         return default_order[idx]

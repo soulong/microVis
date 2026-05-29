@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "microVis"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Interactive desktop GUI for visualizing microProfiler microscopy datasets"
 readme = "README.md"
 license = "MIT"
@@ -12,22 +12,22 @@ requires-python = ">=3.10"
 authors = [{ name = "Hao He" }]
 classifiers = [
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Operating System :: Microsoft :: Windows",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
+keywords = ["microscopy", "image-visualization", "data-plot", "data-modeling"]
 dependencies = [
-    "PySide6>=6.5",
-    "numpy>=1.24",
-    "pandas>=2.0",
-    "matplotlib>=3.7",
-    "scikit-image>=0.22",
-    "pygwalker>=0.4",
-    "openpyxl>=3.1",
-    "natsort>=8.0",
+    "natsort",
+    "numpy",
+    "pandas",
+    "openpyxl",
+    "matplotlib",
+    "scikit-image",
+    "pygwalker",
+    "PySide6",
 ]
 
 [project.urls]
@@ -40,13 +40,8 @@ microvis = "microVis.__main__:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/microVis"]
 
-[tool.hatch.build.targets.wheel.shared-data]
-"src/microVis/py.typed" = "py.typed"
-
-[tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
+[tool.hatch.version]
+path = "src/microVis/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

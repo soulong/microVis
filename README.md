@@ -16,7 +16,7 @@ Interactive desktop GUI for visualizing microProfiler microscopy datasets — pl
 ### Quick Install
 
 ```bash
-pip install microVis
+pip install git+https://github.com/soulong/microVis.git
 ```
 
 ### Conda Install

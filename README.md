@@ -1,8 +1,8 @@
 # microVis
 
-[![PyPI version](https://img.shields.io/pypi/v/microVis)](https://pypi.org/project/microVis/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Python](https://img.shields.io/pypi/pyversions/microVis)
+![Dynamic Badge](https://shields.io)
+[![License](https://shields.io)](https://pypi.org)
+![Python Version](https://shields.io)
 
 Interactive desktop GUI for visualizing microProfiler microscopy datasets — plate grids, multi-channel images, and profiling data.
 

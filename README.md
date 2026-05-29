@@ -1,9 +1,9 @@
 # microVis
 
-[![Package Version](https://shields.io)](https://github.com)
-[![Latest Release](https://shields.io)](https://github.com)
-![Python Version](https://shields.io)(https://github.com)
-[![License](https://shields.io)](https://github.com)
+[![Release](https://img.shields.io/github/v/release/soulong/microVis)](https://github.com/soulong/microVis/releases)
+[![Last Commit](https://img.shields.io/github/last-commit/soulong/microVis)](https://github.com/soulong/microVis/commits/main)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/soulong/microVis)](LICENSE)
 
 Interactive desktop GUI for visualizing microProfiler microscopy datasets — plate grids, multi-channel images, and profiling data.
 

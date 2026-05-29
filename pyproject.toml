@@ -36,6 +36,7 @@ Repository = "https://github.com/soulong/microVis"
 
 [project.scripts]
 microvis = "microVis.__main__:main"
+microvis-install-shortcut = "microVis._shortcut:create_shortcut"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/microVis"]

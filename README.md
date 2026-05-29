@@ -26,14 +26,6 @@ conda env create -f micro.yml
 conda activate micro
 ```
 
-### Development Install
-
-```bash
-git clone https://github.com/soulong/microVis.git
-cd microVis
-pip install -e ".[dev]"
-```
-
 ## Quick Start
 
 ```bash
@@ -82,26 +74,6 @@ Browse profiling tables from `results.db` with:
 ### Pixel Inspector
 
 Click any image thumbnail to see per-channel pixel intensities at that coordinate.
-
-## Key Modules
-
-| Module | Purpose |
-|--------|---------|
-| `io.data_module` | Data access layer wrapping microProfiler ImageDataset + SQLite results.db |
-| `processing.compositing` | Multi-channel image compositing with mask overlay |
-| `processing.contrast` | Contrast enhancement (gamma, histogram equalization) |
-| `processing.overlay` | Segmentation mask boundary extraction |
-| `widgets.well_grid_canvas` | Matplotlib-based well plate grid visualization |
-| `widgets.image_display` | Thumbnail grid with pan/zoom/overlay |
-| `widgets.image_controls` | Channel settings, contrast, overlay controls |
-| `widgets.data_view` | Profiling table browser with PyGwalker |
-| `widgets.channel_controls` | Per-channel checkbox, color, vmin/vmax |
-| `widgets.well_grid_controls` | Plate format, color-by, aggregation controls |
-
-## System Requirements
-
-- **OS**: Windows 10/11 (64-bit) — GUI is Windows-optimized
-- **RAM**: 16 GB minimum (32 GB recommended for large datasets)
 
 ## Acknowledgements
 

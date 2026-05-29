@@ -17,14 +17,9 @@ Interactive desktop GUI for visualizing microProfiler microscopy datasets — pl
 ### Quick Install
 
 ```bash
-pip install git+https://github.com/soulong/microVis.git
-```
-
-### Conda Install
-
-```bash
-conda env create -f micro.yml
-conda activate micro
+git clone https://github.com/soulong/microVis.git
+cd microVis
+pip install .
 ```
 
 ## Quick Start
@@ -36,6 +31,16 @@ microvis
 # Launch directly with a dataset
 microvis "/path/to/Measurement 1"
 ```
+
+### Windows Desktop Shortcut
+
+After installing in the `micro` conda environment, create a desktop shortcut that launches microVis without opening a console window:
+
+```bash
+microvis-install-shortcut
+```
+
+This places a shortcut on the Desktop and in the Start Menu. The shortcut uses `pythonw.exe` from the `micro` environment for a clean, console-free launch.
 
 ## Features
 

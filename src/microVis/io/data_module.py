@@ -195,6 +195,23 @@ class DataModule:
         _log.debug("aggregate: result has %d wells", len(result))
         return result
 
+    def write_label_table(self, table_name: str, df: pd.DataFrame) -> None:
+        """Write label annotations to a table in results.db.
+
+        Args:
+            table_name: Name of the table to write to.
+            df: DataFrame with columns [well, field, stack, tp, label, class].
+        """
+        if self._db_conn is None:
+            raise RuntimeError("No database connection available")
+
+        df.to_sql(table_name, self._db_conn, if_exists="replace", index=False)
+
+        # Update the table schema cache
+        cur = self._db_conn.execute(f'PRAGMA table_info("{table_name}")')
+        self._db_tables[table_name] = {row[1]: row[2] for row in cur.fetchall()}
+        _log.info("Wrote %d rows to table '%s'", len(df), table_name)
+
     # ── Image access ───────────────────────────────────────────────
 
     def lookup_row_indices(

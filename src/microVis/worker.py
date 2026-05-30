@@ -150,3 +150,126 @@ class ImageWorker(QRunnable):
             self.signals.finished.emit(result)
         except Exception as e:
             self.signals.error.emit(str(e))
+
+
+# ── Crop Worker ───────────────────────────────────────────────────────────────
+
+
+class _CropSignals(QObject):
+    finished = Signal(object, object)  # np.ndarray (RGB uint8), ObjectKey
+    error = Signal(str)
+
+
+class CropWorker(QRunnable):
+    """Background worker that crops and masks a single object from an image."""
+
+    def __init__(
+        self,
+        img_data: np.ndarray,
+        mask: np.ndarray,
+        label: int,
+        key: Any,
+        channel_names: list[str],
+        ch_config: dict,
+        dmax: float,
+        contrast_method: str = "none",
+        contrast_gamma: float = 1.0,
+        invert: bool = False,
+        target_size: int = 64,
+        padding: int = 4,
+    ):
+        super().__init__()
+        self.signals = _CropSignals()
+        self.setAutoDelete(False)
+        self._img = img_data
+        self._mask = mask
+        self._label = label
+        self._key = key
+        self._ch_names = channel_names
+        self._ch_config = ch_config
+        self._dmax = dmax
+        self._contrast = contrast_method
+        self._gamma = contrast_gamma
+        self._invert = invert
+        self._target = target_size
+        self._pad = padding
+
+    def run(self) -> None:
+        try:
+            from microVis.processing.compositing import composite_image
+            from microVis.processing.contrast import apply_contrast, invert_image
+
+            mask = self._mask
+            label = self._label
+
+            # Find bounding box of the object
+            ys, xs = np.where(mask == label)
+            if len(ys) == 0:
+                self.signals.finished.emit(None, self._key)
+                return
+
+            y_min, y_max = int(ys.min()), int(ys.max())
+            x_min, x_max = int(xs.min()), int(xs.max())
+
+            # Add padding
+            h, w = mask.shape
+            y_min = max(0, y_min - self._pad)
+            y_max = min(h, y_max + self._pad + 1)
+            x_min = max(0, x_min - self._pad)
+            x_max = min(w, x_max + self._pad + 1)
+
+            # Crop image and mask
+            crop_img = self._img[y_min:y_max, x_min:x_max, :].astype(np.float64)
+            crop_mask = mask[y_min:y_max, x_min:x_max]
+
+            # Apply mask: zero out pixels not belonging to this object
+            obj_mask = (crop_mask == label).astype(np.float64)
+            for ch in range(crop_img.shape[2]):
+                crop_img[:, :, ch] *= obj_mask
+
+            # Per-channel contrast
+            enhanced = np.zeros_like(crop_img, dtype=np.float64)
+            for ch_idx, ch_name in enumerate(self._ch_names):
+                if ch_idx >= crop_img.shape[2]:
+                    break
+                ch_cfg = self._ch_config.get(ch_name, {})
+                if not ch_cfg.get("enabled", True):
+                    enhanced[:, :, ch_idx] = crop_img[:, :, ch_idx]
+                    continue
+                vmin = ch_cfg.get("vmin", 0)
+                vmax = ch_cfg.get("vmax", self._dmax)
+                band = crop_img[:, :, ch_idx]
+                band = np.clip((band - vmin) / max(vmax - vmin, 1e-10), 0, 1)
+                if self._contrast == "gamma":
+                    band = apply_contrast(band, "gamma", gamma=self._gamma)
+                elif self._contrast == "histogram_equalization":
+                    band = apply_contrast(band, "histogram_equalization")
+                if self._invert:
+                    band = invert_image(band)
+                enhanced[:, :, ch_idx] = band
+
+            # Composite
+            comp_config = {
+                ch: {**c, "vmin": 0, "vmax": 1}
+                for ch, c in self._ch_config.items()
+            }
+            rgb = composite_image(enhanced, self._ch_names, comp_config, None, None)
+
+            # Resize to target
+            ch, cw = rgb.shape[:2]
+            if ch > self._target or cw > self._target:
+                from skimage.transform import resize as sk_resize
+                scale = self._target / max(ch, cw)
+                rgb = sk_resize(
+                    rgb,
+                    (int(ch * scale), int(cw * scale), 3),
+                    preserve_range=True,
+                    anti_aliasing=True,
+                ).astype(np.uint8)
+
+            # Return as numpy array (QPixmap must be created on main thread)
+            rgb = np.ascontiguousarray(rgb)
+
+            self.signals.finished.emit(rgb, self._key)
+        except Exception as e:
+            self.signals.error.emit(str(e))

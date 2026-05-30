@@ -33,10 +33,11 @@ from microVis.widgets._event_filter import RotatedLabel
 from microVis.widgets.data_view import DataView
 from microVis.widgets.image_controls import ImageControls
 from microVis.widgets.image_display import ImageDisplay
+from microVis.widgets.label_annotation import LabelAnnotationPanel, ObjectKey
 from microVis.widgets.pixel_info import PixelInfo
 from microVis.widgets.well_grid_canvas import WellGridCanvas
 from microVis.widgets.well_grid_controls import WellGridControls
-from microVis.worker import ImageWorker, ImageWorkerConfig
+from microVis.worker import CropWorker, ImageWorker, ImageWorkerConfig
 
 _log = get_logger("microVis.main_window")
 
@@ -195,23 +196,27 @@ class MainWindow(QMainWindow):
         top_splitter.setStretchFactor(1, 1)
         top_splitter.setSizes([220, 600])
 
-        # ── Bottom splitter: Image View ──
-        bottom_splitter = QSplitter(Qt.Horizontal)
+        # ── Middle splitter: Image View ──
+        middle_splitter = QSplitter(Qt.Horizontal)
 
         self._image_controls = ImageControls()
         self._image_display = ImageDisplay()
 
-        bottom_splitter.addWidget(self._image_controls)
-        bottom_splitter.addWidget(self._image_display)
-        bottom_splitter.setStretchFactor(0, 0)
-        bottom_splitter.setStretchFactor(1, 1)
-        bottom_splitter.setSizes([220, 600])
+        middle_splitter.addWidget(self._image_controls)
+        middle_splitter.addWidget(self._image_display)
+        middle_splitter.setStretchFactor(0, 0)
+        middle_splitter.setStretchFactor(1, 1)
+        middle_splitter.setSizes([220, 600])
 
-        # ── Vertical splitter between grid and image sections ──
+        # ── Label Annotation Panel ──
+        self._label_panel = LabelAnnotationPanel()
+
+        # ── Vertical splitter: grid + image + annotation ──
         v_splitter = QSplitter(Qt.Vertical)
         v_splitter.addWidget(top_splitter)
-        v_splitter.addWidget(bottom_splitter)
-        v_splitter.setSizes([300, 700])
+        v_splitter.addWidget(middle_splitter)
+        v_splitter.addWidget(self._label_panel)
+        v_splitter.setSizes([300, 500, 150])
 
         layout.addWidget(v_splitter)
         return tab
@@ -251,6 +256,15 @@ class MainWindow(QMainWindow):
         # Image display (pixel click)
         self._image_display.pixel_clicked.connect(self._on_pixel_clicked)
 
+        # Label annotation controls
+        ic.label_mask_selected.connect(self._on_label_mask_changed)
+        ic.label_class_added.connect(self._on_label_class_added)
+        ic.label_class_selection_changed.connect(self._on_label_class_selection_changed)
+        ic.label_write_clicked.connect(self._on_label_write_to_db)
+
+        # Label annotation panel crop requests
+        self._label_panel.crop_requested.connect(self._on_crop_requested)
+
         # Data view
         self._data_view.dataset_browse_clicked.connect(self._on_dataset_browse)
         self._data_view.pygwalker_open_clicked.connect(self._on_pygwalker_open)
@@ -289,6 +303,7 @@ class MainWindow(QMainWindow):
             self._image_display.clear()
             self._raw_cache.clear()
             self._last_state.clear()
+            self._label_panel.clear_all()
             self._grid_canvas.update_grid(
                 self._dm, table_name="", col_val=(None, False), agg="mean",
                 cmap="viridis", palette="Set1", fmt_name=DEFAULT_PLATE,
@@ -305,6 +320,7 @@ class MainWindow(QMainWindow):
             self._populate_grid_controls()
             self._populate_image_controls()
             self._populate_data_controls()
+            self._populate_label_controls()
 
             # Initial render
             self._update_grid()
@@ -459,6 +475,13 @@ class MainWindow(QMainWindow):
         self._data_view.set_pygwalker_buttons(bool(tables))
         if not tables:
             self._data_view.clear_table()
+
+    def _populate_label_controls(self) -> None:
+        """Populate mask dropdown in label annotation controls."""
+        if self._dm is None:
+            return
+        self._image_controls.set_label_masks(self._dm.mask_names)
+        self._label_panel.clear_all()
 
     # ── Metadata ─────────────────────────────────────────────────────────────
 
@@ -943,6 +966,167 @@ class MainWindow(QMainWindow):
             self._pixel_info.set_text("  ".join(parts))
         except Exception:
             _log.warning("Failed to read pixel info", exc_info=True)
+
+    # ── Label Annotation Handlers ────────────────────────────────────────────
+
+    def _on_label_mask_changed(self, mask_name: str) -> None:
+        """Handle mask selection change in label controls."""
+        pass  # Mask is used at crop time; no immediate action needed
+
+    def _on_label_class_added(self, class_name: str) -> None:
+        """Handle new class creation from sidebar."""
+        self._label_panel.add_class(class_name)
+
+    def _on_label_class_selection_changed(self) -> None:
+        """Handle change in which classes are selected for display."""
+        selected = self._image_controls.get_selected_class_names()
+        self._label_panel.set_visible_classes(selected)
+
+    def _on_label_write_to_db(self) -> None:
+        """Write all label annotations to the database."""
+        if self._dm is None:
+            return
+
+        mask_name = self._image_controls.get_selected_label_mask()
+        if not mask_name:
+            return
+
+        annotations = self._label_panel.get_annotations()
+        if not annotations:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "No Annotations",
+                "No labeled objects to write. Drag objects into class boxes first.",
+            )
+            return
+
+        # Build DataFrame
+        rows = []
+        for class_name, keys in annotations.items():
+            for key in keys:
+                rows.append({
+                    "well": key.well,
+                    "field": key.field,
+                    "stack": key.stack,
+                    "tp": key.tp,
+                    "label": key.label,
+                    "class": class_name,
+                })
+        df = pd.DataFrame(rows)
+
+        # Determine table name
+        custom_table = self._image_controls.get_label_table_name()
+        table_name = custom_table if custom_table else f"{mask_name}_label"
+
+        # Confirmation dialog
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Write Labels to Database",
+            f"Write {len(df)} label annotations to table '{table_name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            self._dm.write_label_table(table_name, df)
+            _log.info("Wrote %d label annotations to '%s'", len(df), table_name)
+            # Refresh data view to show new table
+            self._populate_data_controls()
+        except Exception:
+            _log.exception("Failed to write label annotations")
+            QMessageBox.warning(
+                self, "Write Failed",
+                "Failed to write label annotations to database. See log for details.",
+            )
+
+    def _on_crop_requested(self, key: ObjectKey, class_name: str) -> None:
+        """Dispatch a CropWorker for a dropped object."""
+        if self._dm is None:
+            return
+
+        mask_name = self._image_controls.get_selected_label_mask()
+        if not mask_name:
+            return
+
+        # Look up row index
+        rows = self._dm.lookup_row_indices(
+            [key.well], [key.field], [key.stack], [key.tp]
+        )
+        if not rows:
+            _log.warning("No row found for %s", key)
+            return
+        row_idx = rows[0][0]
+
+        # Load raw image data
+        raw_data = self._raw_cache.get(row_idx)
+        if raw_data is None:
+            try:
+                raw_data = self._dm.get_imageset(row_idx)
+                self._cache_put(row_idx, raw_data)
+            except Exception:
+                _log.warning("Failed to load image for crop: row %d", row_idx, exc_info=True)
+                return
+
+        img_data, mask_dict = raw_data
+
+        # Get the selected mask
+        mask_full_name = f"mask_{mask_name}"
+        mask = mask_dict.get(mask_full_name)
+        if mask is None:
+            # Try without prefix
+            mask = mask_dict.get(mask_name)
+        if mask is None and mask_dict:
+            # Fall back to first available mask
+            mask = next(iter(mask_dict.values()))
+        if mask is None:
+            _log.warning("No mask found for crop: %s", mask_name)
+            return
+
+        # Get current channel/contrast settings
+        ch_config = self._image_controls.get_channel_config()
+        channel_names = list(ch_config.keys())
+        dmax = DTYPE_MAX.get(str(self._dm.img_dtype), 65535.0)
+
+        # Dispatch crop worker
+        worker = CropWorker(
+            img_data=img_data,
+            mask=mask,
+            label=key.label,
+            key=key,
+            channel_names=channel_names,
+            ch_config=ch_config,
+            dmax=dmax,
+            contrast_method=self._contrast_method,
+            contrast_gamma=self._contrast_gamma,
+            invert=self._invert,
+            target_size=64,
+            padding=4,
+        )
+        worker.signals.finished.connect(self._on_crop_finished, Qt.QueuedConnection)
+        worker.signals.error.connect(
+            lambda msg: _log.warning("Crop worker error: %s", msg),
+            Qt.QueuedConnection,
+        )
+        self._thread_pool.start(worker)
+
+    def _on_crop_finished(self, rgb: np.ndarray, key: ObjectKey) -> None:
+        """Update the class box thumbnail with the cropped image."""
+        if rgb is None:
+            return
+        # Convert numpy RGB to QPixmap on main thread
+        from PySide6.QtGui import QImage, QPixmap
+        rgb = np.ascontiguousarray(rgb)
+        h, w, _ = rgb.shape
+        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg.copy())
+
+        # Find which class box contains this key and update it
+        for class_name in self._label_panel.get_all_class_names():
+            box = self._label_panel.get_class_box(class_name)
+            if box is not None and box.has_object(key):
+                box.set_object_pixmap(key, pixmap)
+                break
 
     # ── Data View Handler ────────────────────────────────────────────────────
 

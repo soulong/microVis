@@ -54,19 +54,17 @@ class WellGridControls(QScrollArea):
             r.setSpacing(4)
             r.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label_text)
-            lbl.setFixedWidth(52)
+            lbl.setFixedWidth(60)
             r.addWidget(lbl)
-            r.addWidget(widget)
+            r.addWidget(widget, stretch=1)
             layout.addLayout(r)
 
         # Format
         self._plate_fmt = NoScrollComboBox()
-        self._plate_fmt.setFixedWidth(80)
         _row("Format", self._plate_fmt)
 
         # Color by
         self._column = NoScrollComboBox()
-        self._column.setFixedWidth(80)
         self._column.setEditable(True)
         self._column.setInsertPolicy(QComboBox.NoInsert)
         self._column.completer().setFilterMode(Qt.MatchContains)
@@ -76,13 +74,12 @@ class WellGridControls(QScrollArea):
 
         # Aggregation
         self._agg = NoScrollComboBox()
-        self._agg.setFixedWidth(80)
         _row("Agg", self._agg)
 
-        # Select All / Clear (centered)
+        # Select All / Clear (left-aligned)
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        btn_row.addStretch()
+        btn_row.setContentsMargins(0, 0, 0, 0)
         self._select_all_btn = QPushButton("Select All")
         self._select_all_btn.setProperty("class", "secondary")
         self._select_all_btn.setFixedSize(80, 24)
@@ -98,12 +95,10 @@ class WellGridControls(QScrollArea):
 
         # Colors
         self._cmap = NoScrollComboBox()
-        self._cmap.setFixedWidth(80)
         _row("Colors", self._cmap)
 
         # Palette
         self._palette = NoScrollComboBox()
-        self._palette.setFixedWidth(80)
         _row("Palette", self._palette)
 
         layout.addStretch()

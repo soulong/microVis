@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -99,6 +100,12 @@ class ImageControls(QScrollArea):
     reset_requested = Signal()
     sort_mode_changed = Signal()
 
+    # Class labeling signals
+    label_mask_selected = Signal(str)       # mask_name
+    label_class_added = Signal(str)         # class_name
+    label_class_selection_changed = Signal()  # selected classes changed
+    label_write_clicked = Signal()          # write to db requested
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWidgetResizable(True)
@@ -151,9 +158,9 @@ class ImageControls(QScrollArea):
             r.setSpacing(4)
             r.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label_text)
-            lbl.setFixedWidth(52)
+            lbl.setFixedWidth(60)
             r.addWidget(lbl)
-            r.addWidget(widget)
+            r.addWidget(widget, stretch=1)
             self._layout.addLayout(r)
 
         # Low / High
@@ -167,8 +174,7 @@ class ImageControls(QScrollArea):
         self._auto_low.setValue(0.01)
         self._auto_low.setDecimals(2)
         self._auto_low.setButtonSymbols(QDoubleSpinBox.NoButtons)
-        self._auto_low.setFixedWidth(80)
-        lowhigh_row.addWidget(self._auto_low)
+        lowhigh_row.addWidget(self._auto_low, stretch=1)
         lbl_hi = QLabel("High")
         lbl_hi.setFixedWidth(28)
         lowhigh_row.addWidget(lbl_hi)
@@ -177,8 +183,7 @@ class ImageControls(QScrollArea):
         self._auto_high.setValue(99.99)
         self._auto_high.setDecimals(2)
         self._auto_high.setButtonSymbols(QDoubleSpinBox.NoButtons)
-        self._auto_high.setFixedWidth(80)
-        lowhigh_row.addWidget(self._auto_high)
+        lowhigh_row.addWidget(self._auto_high, stretch=1)
         self._layout.addLayout(lowhigh_row)
 
         self._auto_low.valueChanged.connect(lambda: self.auto_range_changed.emit())
@@ -208,13 +213,11 @@ class ImageControls(QScrollArea):
         self._image_size.setDecimals(0)
         self._image_size.setSingleStep(10)
         self._image_size.setButtonSymbols(QDoubleSpinBox.NoButtons)
-        self._image_size.setFixedWidth(80)
         self._image_size.valueChanged.connect(lambda: self.image_size_changed.emit())
         _row("Img size", self._image_size)
 
         # Contrast
         self._contrast = NoScrollComboBox()
-        self._contrast.setFixedWidth(80)
         self._contrast.addItems(CONTRAST_METHODS)
         _row("Transform", self._contrast)
 
@@ -223,7 +226,7 @@ class ImageControls(QScrollArea):
         sort_row.setSpacing(4)
         sort_row.setContentsMargins(0, 0, 0, 0)
         sort_lbl = QLabel("Sort well")
-        sort_lbl.setFixedWidth(52)
+        sort_lbl.setFixedWidth(60)
         sort_row.addWidget(sort_lbl)
         self._sort_by_col = QRadioButton("By Col")
         self._sort_by_col.setStyleSheet("font-size: 8pt; spacing: 4px;")
@@ -255,7 +258,6 @@ class ImageControls(QScrollArea):
         self._section("Object Overlay")
 
         self._overlay_col = NoScrollComboBox()
-        self._overlay_col.setFixedWidth(80)
         self._overlay_col.setEditable(True)
         self._overlay_col.setInsertPolicy(QComboBox.NoInsert)
         self._overlay_col.completer().setFilterMode(Qt.MatchContains)
@@ -264,13 +266,95 @@ class ImageControls(QScrollArea):
         _row("Color by", self._overlay_col)
 
         self._overlay_cmap = NoScrollComboBox()
-        self._overlay_cmap.setFixedWidth(80)
         _row("Colors", self._overlay_cmap)
 
         self._overlay_alpha = NoScrollSlider(Qt.Horizontal)
         self._overlay_alpha.setRange(0, 100)
         self._overlay_alpha.setValue(40)
         _row("Alpha", self._overlay_alpha)
+
+        # ── Class Labeling ──
+        self._section("Class Labeling")
+
+        # Mask selector
+        self._label_mask = NoScrollComboBox()
+        self._label_mask.currentTextChanged.connect(self.label_mask_selected)
+        _row("Mask", self._label_mask)
+
+        # Class name input + Add button
+        class_input_row = QHBoxLayout()
+        class_input_row.setSpacing(4)
+        class_input_row.setContentsMargins(0, 0, 0, 0)
+        lbl_class = QLabel("Class")
+        lbl_class.setFixedWidth(60)
+        class_input_row.addWidget(lbl_class)
+        self._class_input = QLineEdit()
+        self._class_input.setPlaceholderText("New class name...")
+        self._class_input.setStyleSheet(
+            "min-height: 18px; max-height: 22px; font-size: 8pt; padding: 2px 3px;"
+        )
+        self._class_input.returnPressed.connect(self._on_add_class)
+        class_input_row.addWidget(self._class_input, stretch=1)
+        self._add_class_btn = QPushButton("Add")
+        self._add_class_btn.setProperty("class", "secondary")
+        self._add_class_btn.setFixedSize(36, 20)
+        self._add_class_btn.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
+        self._add_class_btn.clicked.connect(self._on_add_class)
+        class_input_row.addWidget(self._add_class_btn)
+        self._layout.addLayout(class_input_row)
+
+        # Selected classes (multi-select dropdown)
+        self._class_select_label = QLabel("Selected classes")
+        self._class_select_label.setStyleSheet(
+            "font-size: 8pt; color: #aaaaaa; padding-top: 2px;"
+        )
+        self._class_select_label.setVisible(False)
+        self._layout.addWidget(self._class_select_label)
+
+        self._class_select_scroll = QScrollArea()
+        self._class_select_scroll.setWidgetResizable(True)
+        self._class_select_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._class_select_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._class_select_scroll.setMaximumHeight(24)
+        self._class_select_scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+        )
+        self._class_select_scroll.setVisible(False)
+
+        self._class_select_container = QWidget()
+        self._class_select_layout = QHBoxLayout(self._class_select_container)
+        self._class_select_layout.setSpacing(4)
+        self._class_select_layout.setContentsMargins(0, 0, 0, 0)
+        self._class_checkboxes: dict[str, QCheckBox] = {}
+        self._class_select_layout.addStretch()
+        self._class_select_scroll.setWidget(self._class_select_container)
+        self._layout.addWidget(self._class_select_scroll)
+
+        # Table name input
+        table_row = QHBoxLayout()
+        table_row.setSpacing(4)
+        table_row.setContentsMargins(0, 0, 0, 0)
+        lbl_table = QLabel("Table")
+        lbl_table.setFixedWidth(60)
+        table_row.addWidget(lbl_table)
+        self._label_table_name = QLineEdit()
+        self._label_table_name.setPlaceholderText("{mask}_label")
+        self._label_table_name.setStyleSheet(
+            "min-height: 18px; max-height: 22px; font-size: 8pt; padding: 2px 3px;"
+        )
+        table_row.addWidget(self._label_table_name, stretch=1)
+        self._layout.addLayout(table_row)
+
+        # Write to DB button (matching Auto button style)
+        write_btn_row = QHBoxLayout()
+        write_btn_row.setSpacing(8)
+        self._write_labels_btn = QPushButton("Write to DB")
+        self._write_labels_btn.setProperty("class", "secondary")
+        self._write_labels_btn.setFixedSize(64, 24)
+        self._write_labels_btn.clicked.connect(self.label_write_clicked)
+        write_btn_row.addWidget(self._write_labels_btn)
+        write_btn_row.addStretch()
+        self._layout.addLayout(write_btn_row)
 
         self._layout.addStretch()
         self.setWidget(container)
@@ -387,3 +471,51 @@ class ImageControls(QScrollArea):
     @property
     def tps_widget(self) -> _MultiSelectCombo | None:
         return self._tps_widget
+
+    # ── Class Labeling API ─────────────────────────────────────────
+
+    def set_label_masks(self, mask_names: list[str]) -> None:
+        """Populate the mask dropdown for label annotation."""
+        self._label_mask.blockSignals(True)
+        self._label_mask.clear()
+        self._label_mask.addItems(mask_names)
+        self._label_mask.blockSignals(False)
+
+    def get_selected_label_mask(self) -> str:
+        return self._label_mask.currentText()
+
+    def get_label_table_name(self) -> str:
+        """Return the custom table name, or '' if default ({mask}_label)."""
+        return self._label_table_name.text().strip()
+
+    def get_all_class_names(self) -> list[str]:
+        """Return all added class names."""
+        return list(self._class_checkboxes.keys())
+
+    def get_selected_class_names(self) -> list[str]:
+        """Return currently checked class names."""
+        return [n for n, cb in self._class_checkboxes.items() if cb.isChecked()]
+
+    def _on_add_class(self) -> None:
+        name = self._class_input.text().strip()
+        if not name or name in self._class_checkboxes:
+            return
+        self._class_input.clear()
+
+        # Show the multi-select section on first class
+        self._class_select_label.setVisible(True)
+        self._class_select_scroll.setVisible(True)
+
+        cb = QCheckBox(name)
+        cb.setStyleSheet(
+            "QCheckBox { font-size: 7pt; spacing: 2px; } "
+            "QCheckBox::indicator { width: 12px; height: 12px; }"
+        )
+        cb.setChecked(True)
+        cb.toggled.connect(lambda: self.label_class_selection_changed.emit())
+        # Insert before the trailing stretch
+        idx = self._class_select_layout.count() - 1
+        self._class_select_layout.insertWidget(idx, cb)
+        self._class_checkboxes[name] = cb
+
+        self.label_class_added.emit(name)

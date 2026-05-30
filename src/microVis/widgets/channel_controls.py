@@ -44,7 +44,6 @@ class ChannelControls(QWidget):
         top.addWidget(self._toggle)
 
         self._color = NoScrollComboBox()
-        self._color.setFixedWidth(80)
         color_names = list(CHANNEL_COLORS.keys())
         self._color.addItems(color_names)
         current_color = cfg.get("color", "green")
@@ -72,7 +71,6 @@ class ChannelControls(QWidget):
         self._vmin.setDecimals(0)
         self._vmin.setValue(cfg.get("vmin", 0))
         self._vmin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self._vmin.setFixedWidth(80)
         self._vmin.valueChanged.connect(lambda: self.config_changed.emit(self._ch_name))
         self._vmin.setContextMenuPolicy(Qt.NoContextMenu)
         bottom.addWidget(self._vmin, stretch=1)
@@ -83,7 +81,6 @@ class ChannelControls(QWidget):
         self._vmax.setDecimals(0)
         self._vmax.setValue(cfg.get("vmax", 65535))
         self._vmax.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self._vmax.setFixedWidth(80)
         self._vmax.valueChanged.connect(lambda: self.config_changed.emit(self._ch_name))
         self._vmax.setContextMenuPolicy(Qt.NoContextMenu)
         bottom.addWidget(self._vmax, stretch=1)

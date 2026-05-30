@@ -7,8 +7,8 @@ matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QMimeData, Qt, Signal
+from PySide6.QtGui import QColor, QCursor, QDrag, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+_MIME_TYPE = "application/x-microvis-object"
 
 
 class _ThumbnailView(QGraphicsView):
@@ -77,6 +79,7 @@ class _ThumbnailView(QGraphicsView):
         self._panning = False
         self._pan_start = None
         self._last_tip = ""
+        self._drag_start_pos = None  # for distinguishing click vs drag
         self.setMouseTracking(True)
 
         # Static tooltip fallback (when no mask for per-object hover)
@@ -108,13 +111,7 @@ class _ThumbnailView(QGraphicsView):
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
         elif event.button() == Qt.LeftButton:
-            scene_pos = self.mapToScene(event.pos())
-            x = int(scene_pos.x())
-            y = int(scene_pos.y())
-            h = self._pixmap_item.pixmap().height()
-            w = self._pixmap_item.pixmap().width()
-            if 0 <= x < w and 0 <= y < h:
-                self.pixel_clicked.emit(self._well, self._field, self._stack, self._tp, x, y)
+            self._drag_start_pos = event.pos()
             super().mousePressEvent(event)
         else:
             super().mousePressEvent(event)
@@ -127,6 +124,23 @@ class _ThumbnailView(QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
             event.accept()
             return
+
+        # Check for drag initiation (left button held + moved beyond threshold)
+        if (
+            self._drag_start_pos is not None
+            and self._mask is not None
+            and event.buttons() & Qt.LeftButton
+            and (event.pos() - self._drag_start_pos).manhattanLength() > 8
+        ):
+            scene_pos = self.mapToScene(event.pos())
+            x = int(scene_pos.x())
+            y = int(scene_pos.y())
+            h, w = self._mask.shape
+            if 0 <= x < w and 0 <= y < h:
+                lbl = int(self._mask[y, x])
+                if lbl > 0:
+                    self._start_object_drag(lbl)
+                    return
 
         # Per-object tooltip on hover
         if self._mask is not None:
@@ -162,12 +176,52 @@ class _ThumbnailView(QGraphicsView):
             self._pan_start = None
             self.setCursor(Qt.ArrowCursor)
             event.accept()
+        elif event.button() == Qt.LeftButton:
+            # Short click = emit pixel_clicked (preserves existing behavior)
+            if self._drag_start_pos is not None:
+                scene_pos = self.mapToScene(event.pos())
+                x = int(scene_pos.x())
+                y = int(scene_pos.y())
+                h = self._pixmap_item.pixmap().height()
+                w = self._pixmap_item.pixmap().width()
+                if 0 <= x < w and 0 <= y < h:
+                    self.pixel_clicked.emit(self._well, self._field, self._stack, self._tp, x, y)
+            self._drag_start_pos = None
+            super().mouseReleaseEvent(event)
         else:
             super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
         self.reset_zoom()
         event.accept()
+
+    def _start_object_drag(self, label: int) -> None:
+        """Initiate a QDrag carrying the ObjectKey for a mask object."""
+        from microVis.widgets.label_annotation import ObjectKey, encode_object_key
+
+        key = ObjectKey(
+            well=self._well, field=self._field,
+            stack=self._stack, tp=self._tp, label=label,
+        )
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(_MIME_TYPE, encode_object_key(key))
+        drag.setMimeData(mime)
+
+        # Create a small drag pixmap from the object region
+        if self._mask is not None:
+            ys, xs = np.where(self._mask == label)
+            if len(ys) > 0:
+                pix = self._pixmap_item.pixmap()
+                # Scale factors between pixmap and original scene
+                y_min, y_max = int(ys.min()), int(ys.max())
+                x_min, x_max = int(xs.min()), int(xs.max())
+                # Crop from the pixmap
+                crop = pix.copy(x_min, y_min, x_max - x_min + 1, y_max - y_min + 1)
+                drag.setPixmap(crop.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+        self._drag_start_pos = None
+        drag.exec(Qt.CopyAction)
 
     def reset_zoom(self) -> None:
         self.resetTransform()

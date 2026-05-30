@@ -299,7 +299,7 @@ class ImageDisplay(QScrollArea):
         self._results_cache.append(result)
 
         # Determine grouping key
-        if not sort_by_row:
+        if sort_by_row:
             group_key = result["well"]
         else:
             group_key = (result["field"], result["stack"], result["tp"])
@@ -356,7 +356,7 @@ class ImageDisplay(QScrollArea):
 
         results = self._results_cache
 
-        if not sort_by_row:
+        if sort_by_row:
             groups = defaultdict(list)
             for r in results:
                 groups[r["well"]].append(r)
@@ -474,7 +474,7 @@ class ImageDisplay(QScrollArea):
     def _add_thumbnail_sorted(self, row, r, thumb_size, overlay_alpha, overlay_cmap,
                                saved_state, sort_by_row):
         """Insert thumbnail at sorted position within a row."""
-        if not sort_by_row:
+        if sort_by_row:
             # Sort by (stack, tp, field) within a well row
             new_key = (r["stack"], r["tp"], r["field"])
         else:
@@ -531,7 +531,7 @@ class ImageDisplay(QScrollArea):
             field = int(parts[1][1:])
             stack = int(parts[2][1:])
             tp = int(parts[3][1:])
-            if not sort_by_row:
+            if sort_by_row:
                 return (stack, tp, field)
             else:
                 return well

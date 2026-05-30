@@ -76,10 +76,10 @@ class WellGridControls(QScrollArea):
         self._agg = NoScrollComboBox()
         _row("Agg", self._agg)
 
-        # Select All / Clear (left-aligned)
+        # Select All / Clear (centered)
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.addStretch()
         self._select_all_btn = QPushButton("Select All")
         self._select_all_btn.setProperty("class", "secondary")
         self._select_all_btn.setFixedSize(80, 24)

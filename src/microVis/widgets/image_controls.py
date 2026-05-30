@@ -103,6 +103,7 @@ class ImageControls(QScrollArea):
     # Class labeling signals
     label_mask_selected = Signal(str)       # mask_name
     label_class_added = Signal(str)         # class_name
+    label_class_removed = Signal(str)       # class_name removed
     label_class_selection_changed = Signal()  # selected classes changed
     label_write_clicked = Signal()          # write to db requested
 
@@ -171,7 +172,7 @@ class ImageControls(QScrollArea):
         lowhigh_row.addWidget(lbl_lo)
         self._auto_low = NoScrollDoubleSpinBox()
         self._auto_low.setRange(0.0, 100.0)
-        self._auto_low.setValue(0.01)
+        self._auto_low.setValue(0.5)
         self._auto_low.setDecimals(2)
         self._auto_low.setButtonSymbols(QDoubleSpinBox.NoButtons)
         lowhigh_row.addWidget(self._auto_low, stretch=1)
@@ -180,7 +181,7 @@ class ImageControls(QScrollArea):
         lowhigh_row.addWidget(lbl_hi)
         self._auto_high = NoScrollDoubleSpinBox()
         self._auto_high.setRange(0.0, 100.0)
-        self._auto_high.setValue(99.99)
+        self._auto_high.setValue(99.5)
         self._auto_high.setDecimals(2)
         self._auto_high.setButtonSymbols(QDoubleSpinBox.NoButtons)
         lowhigh_row.addWidget(self._auto_high, stretch=1)
@@ -225,15 +226,15 @@ class ImageControls(QScrollArea):
         sort_row = QHBoxLayout()
         sort_row.setSpacing(4)
         sort_row.setContentsMargins(0, 0, 0, 0)
-        sort_lbl = QLabel("Sort well")
+        sort_lbl = QLabel("Group by")
         sort_lbl.setFixedWidth(60)
         sort_row.addWidget(sort_lbl)
-        self._sort_by_col = QRadioButton("By Col")
+        self._sort_by_col = QRadioButton("Col")
+        self._sort_by_col.setChecked(True)
         self._sort_by_col.setStyleSheet("font-size: 8pt; spacing: 4px;")
         self._sort_by_col.toggled.connect(lambda: self.sort_mode_changed.emit())
         sort_row.addWidget(self._sort_by_col)
-        self._sort_by_row = QRadioButton("By Row")
-        self._sort_by_row.setChecked(True)
+        self._sort_by_row = QRadioButton("Row")
         self._sort_by_row.setStyleSheet("font-size: 8pt; spacing: 4px;")
         self._sort_by_row.toggled.connect(lambda: self.sort_mode_changed.emit())
         sort_row.addWidget(self._sort_by_row)
@@ -255,6 +256,7 @@ class ImageControls(QScrollArea):
         self._layout.addWidget(self._gamma_slider)
 
         # ── Object Overlay ──
+        self._layout.addSpacing(8)
         self._section("Object Overlay")
 
         self._overlay_col = NoScrollComboBox()
@@ -273,12 +275,13 @@ class ImageControls(QScrollArea):
         self._overlay_alpha.setValue(40)
         _row("Alpha", self._overlay_alpha)
 
-        # ── Class Labeling ──
-        self._section("Class Labeling")
+        # ── Object Label ──
+        self._layout.addSpacing(8)
+        self._section("Object Label")
 
         # Mask selector
         self._label_mask = NoScrollComboBox()
-        self._label_mask.currentTextChanged.connect(self.label_mask_selected)
+        self._label_mask.currentTextChanged.connect(self._on_label_mask_changed)
         _row("Mask", self._label_mask)
 
         # Class name input + Add button
@@ -301,6 +304,12 @@ class ImageControls(QScrollArea):
         self._add_class_btn.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
         self._add_class_btn.clicked.connect(self._on_add_class)
         class_input_row.addWidget(self._add_class_btn)
+        self._remove_class_btn = QPushButton("Del")
+        self._remove_class_btn.setProperty("class", "secondary")
+        self._remove_class_btn.setFixedSize(36, 20)
+        self._remove_class_btn.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
+        self._remove_class_btn.clicked.connect(self._on_remove_class)
+        class_input_row.addWidget(self._remove_class_btn)
         self._layout.addLayout(class_input_row)
 
         # Selected classes (multi-select dropdown)
@@ -334,23 +343,23 @@ class ImageControls(QScrollArea):
         table_row = QHBoxLayout()
         table_row.setSpacing(4)
         table_row.setContentsMargins(0, 0, 0, 0)
-        lbl_table = QLabel("Table")
+        lbl_table = QLabel("Table name")
         lbl_table.setFixedWidth(60)
         table_row.addWidget(lbl_table)
         self._label_table_name = QLineEdit()
-        self._label_table_name.setPlaceholderText("{mask}_label")
         self._label_table_name.setStyleSheet(
             "min-height: 18px; max-height: 22px; font-size: 8pt; padding: 2px 3px;"
         )
         table_row.addWidget(self._label_table_name, stretch=1)
         self._layout.addLayout(table_row)
 
-        # Write to DB button (matching Auto button style)
+        # Save Label button (centered, 1.5x width of Auto)
         write_btn_row = QHBoxLayout()
         write_btn_row.setSpacing(8)
-        self._write_labels_btn = QPushButton("Write to DB")
+        write_btn_row.addStretch()
+        self._write_labels_btn = QPushButton("Save Label")
         self._write_labels_btn.setProperty("class", "secondary")
-        self._write_labels_btn.setFixedSize(64, 24)
+        self._write_labels_btn.setFixedSize(96, 24)
         self._write_labels_btn.clicked.connect(self.label_write_clicked)
         write_btn_row.addWidget(self._write_labels_btn)
         write_btn_row.addStretch()
@@ -480,12 +489,21 @@ class ImageControls(QScrollArea):
         self._label_mask.clear()
         self._label_mask.addItems(mask_names)
         self._label_mask.blockSignals(False)
+        # Set initial table name default
+        if mask_names:
+            self._label_table_name.setText(f"{mask_names[0]}_label")
+
+    def _on_label_mask_changed(self, mask_name: str) -> None:
+        """Update default table name when mask selection changes."""
+        if mask_name:
+            self._label_table_name.setText(f"{mask_name}_label")
+        self.label_mask_selected.emit(mask_name)
 
     def get_selected_label_mask(self) -> str:
         return self._label_mask.currentText()
 
     def get_label_table_name(self) -> str:
-        """Return the custom table name, or '' if default ({mask}_label)."""
+        """Return the table name (always user-editable, defaults to {mask}_label)."""
         return self._label_table_name.text().strip()
 
     def get_all_class_names(self) -> list[str]:
@@ -519,3 +537,18 @@ class ImageControls(QScrollArea):
         self._class_checkboxes[name] = cb
 
         self.label_class_added.emit(name)
+
+    def _on_remove_class(self) -> None:
+        """Remove the last added class."""
+        if not self._class_checkboxes:
+            return
+        # Get last class name (dict preserves insertion order in Python 3.7+)
+        name = list(self._class_checkboxes.keys())[-1]
+        cb = self._class_checkboxes.pop(name)
+        self._class_select_layout.removeWidget(cb)
+        cb.deleteLater()
+        # Hide multi-select section if no classes left
+        if not self._class_checkboxes:
+            self._class_select_label.setVisible(False)
+            self._class_select_scroll.setVisible(False)
+        self.label_class_removed.emit(name)

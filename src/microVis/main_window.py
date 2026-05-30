@@ -210,15 +210,16 @@ class MainWindow(QMainWindow):
 
         # ── Label Annotation Panel ──
         self._label_panel = LabelAnnotationPanel()
+        self._label_panel.setVisible(False)
 
         # ── Vertical splitter: grid + image + annotation ──
-        v_splitter = QSplitter(Qt.Vertical)
-        v_splitter.addWidget(top_splitter)
-        v_splitter.addWidget(middle_splitter)
-        v_splitter.addWidget(self._label_panel)
-        v_splitter.setSizes([300, 500, 150])
+        self._v_splitter = QSplitter(Qt.Vertical)
+        self._v_splitter.addWidget(top_splitter)
+        self._v_splitter.addWidget(middle_splitter)
+        self._v_splitter.addWidget(self._label_panel)
+        self._v_splitter.setSizes([250, 750, 0])
 
-        layout.addWidget(v_splitter)
+        layout.addWidget(self._v_splitter)
         return tab
 
     # ── Signal Connections ───────────────────────────────────────────────────
@@ -259,6 +260,7 @@ class MainWindow(QMainWindow):
         # Label annotation controls
         ic.label_mask_selected.connect(self._on_label_mask_changed)
         ic.label_class_added.connect(self._on_label_class_added)
+        ic.label_class_removed.connect(self._on_label_class_removed)
         ic.label_class_selection_changed.connect(self._on_label_class_selection_changed)
         ic.label_write_clicked.connect(self._on_label_write_to_db)
 
@@ -681,8 +683,8 @@ class MainWindow(QMainWindow):
         # Reset Low/High to defaults
         ic.auto_low.blockSignals(True)
         ic.auto_high.blockSignals(True)
-        ic.auto_low.setValue(0.01)
-        ic.auto_high.setValue(99.99)
+        ic.auto_low.setValue(0.5)
+        ic.auto_high.setValue(99.5)
         ic.auto_low.blockSignals(False)
         ic.auto_high.blockSignals(False)
         # Re-init channel config to defaults
@@ -976,6 +978,25 @@ class MainWindow(QMainWindow):
     def _on_label_class_added(self, class_name: str) -> None:
         """Handle new class creation from sidebar."""
         self._label_panel.add_class(class_name)
+        # Show class boxes panel on first class creation
+        if not self._label_panel.isVisible():
+            self._label_panel.setVisible(True)
+            # Reallocate space: 25% well grid, 50% image view, 25% class boxes
+            total = sum(self._v_splitter.sizes())
+            self._v_splitter.setSizes([
+                int(total * 0.25),
+                int(total * 0.50),
+                int(total * 0.25),
+            ])
+
+    def _on_label_class_removed(self, class_name: str) -> None:
+        """Handle class deletion from sidebar."""
+        self._label_panel.remove_class(class_name)
+        # Hide panel if no classes remain
+        if not self._label_panel.get_all_class_names():
+            self._label_panel.setVisible(False)
+            total = sum(self._v_splitter.sizes())
+            self._v_splitter.setSizes([int(total * 0.30), int(total * 0.70), 0])
 
     def _on_label_class_selection_changed(self) -> None:
         """Handle change in which classes are selected for display."""
@@ -1015,13 +1036,12 @@ class MainWindow(QMainWindow):
         df = pd.DataFrame(rows)
 
         # Determine table name
-        custom_table = self._image_controls.get_label_table_name()
-        table_name = custom_table if custom_table else f"{mask_name}_label"
+        table_name = self._image_controls.get_label_table_name() or f"{mask_name}_label"
 
         # Confirmation dialog
         from PySide6.QtWidgets import QMessageBox
         reply = QMessageBox.question(
-            self, "Write Labels to Database",
+            self, "Save Labels",
             f"Write {len(df)} label annotations to table '{table_name}'?",
             QMessageBox.Yes | QMessageBox.No,
         )

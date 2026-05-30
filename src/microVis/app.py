@@ -38,6 +38,9 @@ def run_app(dataset_dir: str | None = None) -> None:
     Args:
         dataset_dir: Optional path to a measurement directory to load on startup.
     """
+    import os
+    os.environ.setdefault("QT_LOGGING_RULES", "qt.gui.icc=false")
+
     setup_logging()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")

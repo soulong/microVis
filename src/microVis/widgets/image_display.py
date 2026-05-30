@@ -263,14 +263,16 @@ class ImageDisplay(QScrollArea):
             row = QHBoxLayout(row_widget)
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(6)
+            row.addStretch()
             self._row_widgets[group_key] = (row_widget, row)
-            self._layout.addWidget(row_widget)
+            # Insert row in sorted position (left-to-right, top-to-bottom)
+            self._insert_row_sorted(group_key, row_widget)
         else:
             row_widget, row = self._row_widgets[group_key]
 
-        # Insert thumbnail (before the trailing stretch in the row)
-        self._add_thumbnail_column(row, result, thumb_size, overlay_alpha,
-                                   overlay_cmap, saved_state)
+        # Insert thumbnail in sorted position within the row
+        self._add_thumbnail_sorted(row, result, thumb_size, overlay_alpha,
+                                   overlay_cmap, saved_state, sort_by_row)
 
         # Re-add trailing stretch
         self._layout.addStretch()
@@ -311,7 +313,8 @@ class ImageDisplay(QScrollArea):
                 row.setContentsMargins(0, 0, 0, 0)
                 row.setSpacing(6)
                 self._row_widgets[well] = (row_widget, row)
-                for r in groups[well]:
+                for r in sorted(groups[well],
+                                key=lambda x: (x["stack"], x["tp"], x["field"])):
                     self._add_thumbnail_column(row, r, thumb_size, overlay_alpha,
                                                overlay_cmap, saved_state)
                 row.addStretch()
@@ -384,6 +387,102 @@ class ImageDisplay(QScrollArea):
         self._rebuild_display(thumb_size, overlay_alpha, overlay_cmap,
                               saved_state, sort_by_row)
         return True
+
+    def _insert_row_sorted(self, group_key, row_widget):
+        """Insert row widget at the correct sorted position in the layout."""
+        # Build list of existing group_keys in layout order
+        existing = []
+        for i in range(self._layout.count()):
+            item = self._layout.itemAt(i)
+            if item is None or not item.widget():
+                continue
+            for gk, (rw, _) in self._row_widgets.items():
+                if rw is item.widget():
+                    existing.append(gk)
+                    break
+
+        # Find insertion index
+        insert_idx = len(existing)
+        for i, gk in enumerate(existing):
+            if group_key < gk:
+                insert_idx = i
+                break
+
+        # Remove trailing stretch, insert row, re-add stretch
+        last = self._layout.itemAt(self._layout.count() - 1)
+        has_stretch = last is not None and last.spacerItem() is not None
+        if has_stretch:
+            self._layout.takeAt(self._layout.count() - 1)
+        self._layout.insertWidget(insert_idx, row_widget)
+        if has_stretch:
+            self._layout.addStretch()
+
+    def _add_thumbnail_sorted(self, row, r, thumb_size, overlay_alpha, overlay_cmap,
+                               saved_state, sort_by_row):
+        """Insert thumbnail at sorted position within a row."""
+        if not sort_by_row:
+            # Sort by (stack, tp, field) within a well row
+            new_key = (r["stack"], r["tp"], r["field"])
+        else:
+            # Sort by well name within a (field, stack, tp) row
+            new_key = r["well"]
+
+        # Find insertion index: count existing columns before the stretch
+        insert_idx = row.count() - 1  # before trailing stretch
+        for i in range(row.count() - 1):  # skip trailing stretch
+            item = row.itemAt(i)
+            if item is None or not item.layout():
+                continue
+            # Extract metadata label from the column to get sort key
+            col_layout = item.layout()
+            if col_layout.count() > 0:
+                meta_item = col_layout.itemAt(0)
+                if meta_item and meta_item.widget() and isinstance(meta_item.widget(), QLabel):
+                    text = meta_item.widget().text()
+                    existing_key = self._parse_sort_key(text, sort_by_row)
+                    if existing_key is not None and new_key < existing_key:
+                        insert_idx = i
+                        break
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.setContentsMargins(0, 0, 0, 0)
+
+        meta = QLabel(f"{r['well']} f{r['field']} z{r['stack']} t{r['tp']}")
+        meta.setStyleSheet("color: #aaaaaa; font-size: 8pt;")
+        meta.setAlignment(Qt.AlignCenter)
+        col.addWidget(meta)
+
+        thumb = _ThumbnailView(
+            r["rgb"], r["well"], r["field"], r["stack"], r["tp"],
+            r.get("polygons"), overlay_alpha, overlay_cmap,
+            r.get("overlay_val"), r.get("overlay_col"),
+            r.get("n_objects"), r.get("mask"), r.get("obj_values"),
+            thumb_size,
+        )
+        thumb.pixel_clicked.connect(self.pixel_clicked)
+        if saved_state:
+            key = (r["well"], r["field"], r["stack"], r["tp"])
+            if key in saved_state:
+                thumb.restore_view_state(saved_state[key])
+        col.addWidget(thumb)
+        row.insertLayout(insert_idx, col)
+
+    @staticmethod
+    def _parse_sort_key(label_text, sort_by_row):
+        """Parse 'A1 f0 z0 t0' label into a sort key tuple."""
+        try:
+            parts = label_text.split()
+            well = parts[0]
+            field = int(parts[1][1:])
+            stack = int(parts[2][1:])
+            tp = int(parts[3][1:])
+            if not sort_by_row:
+                return (stack, tp, field)
+            else:
+                return well
+        except (IndexError, ValueError):
+            return None
 
     def _add_thumbnail_column(self, row, r, thumb_size, overlay_alpha, overlay_cmap,
                                saved_state):

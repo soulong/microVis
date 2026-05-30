@@ -36,6 +36,7 @@ class DataModule:
         self._db_tables: dict[str, dict[str, str]] = {}
         self._metadata: pd.DataFrame | None = None
         self._img_dtype_cache: str | None = None
+        self._wells_cache: list[str] | None = None
         self._ready = False
 
         self._init_dataset()
@@ -84,6 +85,10 @@ class DataModule:
         return self._ready
 
     @property
+    def root_dir(self) -> str:
+        return str(self._root_dir)
+
+    @property
     def channels(self) -> list[str]:
         return list(self._dataset.intensity_colnames)
 
@@ -108,7 +113,9 @@ class DataModule:
         return self._img_dtype_cache
 
     def get_wells(self) -> list[str]:
-        return sorted(self._metadata["well"].unique())
+        if self._wells_cache is None:
+            self._wells_cache = sorted(self._metadata["well"].unique())
+        return self._wells_cache
 
     def get_fields(self) -> list[int]:
         return sorted(int(f) for f in self._metadata["field"].unique())

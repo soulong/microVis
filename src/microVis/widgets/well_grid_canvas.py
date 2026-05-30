@@ -4,6 +4,7 @@ import matplotlib
 
 matplotlib.use("QtAgg")
 
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.cm import ScalarMappable
 from matplotlib.figure import Figure
@@ -78,8 +79,6 @@ class WellGridCanvas(QWidget):
         metadata_map: dict[str, float | str] | None = None,
     ) -> None:
         """Redraw the well grid with current parameters."""
-        import matplotlib.pyplot as plt
-
         self._axes.clear()
         self._axes.set_facecolor("#252536")
         # Clear the colorbar axes and hide it until we know we need it.

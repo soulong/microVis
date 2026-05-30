@@ -29,5 +29,11 @@ def apply_contrast(image: np.ndarray, method: str, **params) -> np.ndarray:
 
 
 def invert_image(image: np.ndarray) -> np.ndarray:
-    """Invert pixel values. Works on any dtype."""
-    return image.max() - image + image.min()
+    """Invert pixel values.
+
+    For float images in [0, 1], returns 1 - image.
+    For integer dtypes, maps min→max and max→min linearly.
+    """
+    if np.issubdtype(image.dtype, np.floating):
+        return 1.0 - image
+    return image.dtype.type(image.max()) - image + image.dtype.type(image.min())

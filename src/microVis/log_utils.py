@@ -1,6 +1,7 @@
 """Logger setup for microVis."""
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 from pathlib import Path
@@ -28,6 +29,8 @@ def setup_logging() -> None:
     root = logging.getLogger("microVis")
     root.addHandler(handler)
     root.setLevel(logging.DEBUG)
+
+    atexit.register(logging.shutdown)
 
 
 def get_logger(name: str = "microVis") -> logging.Logger:

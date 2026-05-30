@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, Signal, QRunnable
+from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from skimage.transform import resize as sk_resize
 
 from microVis._settings import (
     AGG_METHODS,
@@ -30,9 +29,6 @@ from microVis._settings import (
 )
 from microVis.io.data_module import DataModule
 from microVis.log_utils import get_logger
-from microVis.processing.compositing import composite_image
-from microVis.processing.contrast import apply_contrast
-from microVis.processing.overlay import extract_polygons
 from microVis.widgets._event_filter import RotatedLabel
 from microVis.widgets.data_view import DataView
 from microVis.widgets.image_controls import ImageControls
@@ -40,146 +36,9 @@ from microVis.widgets.image_display import ImageDisplay
 from microVis.widgets.pixel_info import PixelInfo
 from microVis.widgets.well_grid_canvas import WellGridCanvas
 from microVis.widgets.well_grid_controls import WellGridControls
+from microVis.worker import ImageWorker, ImageWorkerConfig
 
 _log = get_logger("microVis.main_window")
-
-
-# ── Background Worker ──────────────────────────────────────────────────────
-
-def _downscale_image(img_data: np.ndarray, thumb_size: int) -> np.ndarray:
-    """Downscale (H, W, C) array to fit within thumb_size."""
-    h, w = img_data.shape[:2]
-    if h <= thumb_size and w <= thumb_size:
-        return img_data
-    scale = thumb_size / max(h, w)
-    new_h, new_w = int(h * scale), int(w * scale)
-    return sk_resize(
-        img_data, (new_h, new_w, img_data.shape[2]),
-        preserve_range=True, anti_aliasing=True,
-    ).astype(img_data.dtype)
-
-
-def _downscale_mask(mask_dict: dict, thumb_size: int) -> tuple:
-    """Downscale first mask in dict. Returns (mask_name, small_mask) or (None, None)."""
-    if not mask_dict:
-        return None, None
-    name = next(iter(mask_dict))
-    first_mask = mask_dict[name]
-    if first_mask is None:
-        return None, None
-    h, w = first_mask.shape
-    if h <= thumb_size and w <= thumb_size:
-        return name, first_mask
-    scale = thumb_size / max(h, w)
-    small = sk_resize(
-        first_mask, (int(h * scale), int(w * scale)),
-        order=0, preserve_range=True, anti_aliasing=False,
-    ).astype(first_mask.dtype)
-    return name, small
-
-
-class _WorkerSignals(QObject):
-    finished = Signal(dict)
-    error = Signal(str)
-
-
-class _ImageWorker(QRunnable):
-    """Process a single image at thumbnail resolution in a background thread."""
-
-    def __init__(self, row_idx, well, field, stack, tp,
-                 raw_data, thumb_size,
-                 channel_names, ch_config, dmax,
-                 contrast_method, contrast_gamma, invert,
-                 need_polygons, overlay_val, overlay_col,
-                 n_objects, obj_values, gen, sort_by_row):
-        super().__init__()
-        self.signals = _WorkerSignals()
-        self._gen = gen
-        self._row_idx = row_idx
-        self._well = well
-        self._field = field
-        self._stack = stack
-        self._tp = tp
-        self._raw_data = raw_data
-        self._thumb_size = thumb_size
-        self._channel_names = channel_names
-        self._ch_config = ch_config
-        self._dmax = dmax
-        self._contrast_method = contrast_method
-        self._contrast_gamma = contrast_gamma
-        self._invert = invert
-        self._need_polygons = need_polygons
-        self._overlay_val = overlay_val
-        self._overlay_col = overlay_col
-        self._n_objects = n_objects
-        self._obj_values = obj_values
-        self._sort_by_row = sort_by_row
-        self.setAutoDelete(False)
-
-    @property
-    def gen(self) -> int:
-        return self._gen
-
-    def run(self) -> None:
-        try:
-            from microVis.processing.compositing import composite_image
-            from microVis.processing.contrast import apply_contrast
-            from microVis.processing.overlay import extract_polygons
-
-            img_data, mask_dict = self._raw_data
-
-            # Downscale to thumbnail resolution
-            img_small = _downscale_image(img_data, self._thumb_size)
-            mask_name, mask_small = _downscale_mask(mask_dict, self._thumb_size)
-
-            # Per-channel contrast on small image
-            enhanced = np.zeros_like(img_small, dtype=np.float64)
-            for ch_idx, ch_name in enumerate(self._channel_names):
-                ch_cfg = self._ch_config.get(ch_name, {})
-                if not ch_cfg.get("enabled", True):
-                    enhanced[:, :, ch_idx] = img_small[:, :, ch_idx].astype(np.float64)
-                    continue
-                vmin = ch_cfg.get("vmin", 0)
-                vmax = ch_cfg.get("vmax", self._dmax)
-                band = img_small[:, :, ch_idx].astype(np.float64)
-                band = np.clip((band - vmin) / max(vmax - vmin, 1e-10), 0, 1)
-                if self._contrast_method == "gamma":
-                    band = apply_contrast(band, "gamma", gamma=self._contrast_gamma)
-                elif self._contrast_method == "histogram_equalization":
-                    band = apply_contrast(band, "histogram_equalization")
-                if self._invert:
-                    band = 1.0 - band
-                enhanced[:, :, ch_idx] = band
-
-            # Composite
-            comp_config = {ch: {**cfg, "vmin": 0, "vmax": 1}
-                           for ch, cfg in self._ch_config.items()}
-            rgb = composite_image(enhanced, self._channel_names, comp_config, None, None)
-
-            # Polygons from downscaled mask
-            polygons = None
-            first_mask = None
-            if self._need_polygons and mask_small is not None:
-                first_mask = mask_small
-                polygons = extract_polygons(first_mask)
-
-            result = {
-                "rgb": np.ascontiguousarray(rgb),
-                "well": self._well, "field": self._field,
-                "stack": self._stack, "tp": self._tp,
-                "polygons": polygons,
-                "overlay_val": self._overlay_val,
-                "overlay_col": self._overlay_col,
-                "n_objects": self._n_objects,
-                "mask": first_mask,
-                "obj_values": self._obj_values,
-                "gen": self._gen,
-                "thumb_size": self._thumb_size,
-                "sort_by_row": self._sort_by_row,
-            }
-            self.signals.finished.emit(result)
-        except Exception as e:
-            self.signals.error.emit(str(e))
 
 
 
@@ -422,33 +281,36 @@ class MainWindow(QMainWindow):
             _log.exception("Failed to load dataset from %s", p)
             return
 
-        self._dataset_dir = str(p)
-        self._data_view.set_dataset_label(str(p))
+        try:
+            self._dataset_dir = str(p)
+            self._data_view.set_dataset_label(str(p))
 
-        # Reset UI state for new dataset
-        self._image_display.clear()
-        self._raw_cache.clear()
-        self._last_state.clear()
-        self._grid_canvas.update_grid(
-            self._dm, table_name="", col_val=(None, False), agg="mean",
-            cmap="viridis", palette="Set1", fmt_name=DEFAULT_PLATE,
-            selected_wells=set(),
-        )
+            # Reset UI state for new dataset
+            self._image_display.clear()
+            self._raw_cache.clear()
+            self._last_state.clear()
+            self._grid_canvas.update_grid(
+                self._dm, table_name="", col_val=(None, False), agg="mean",
+                cmap="viridis", palette="Set1", fmt_name=DEFAULT_PLATE,
+                selected_wells=set(),
+            )
 
-        # Init selection (no wells selected by default)
-        self._selected_wells = set()
+            # Init selection (no wells selected by default)
+            self._selected_wells = set()
 
-        # Init channel config
-        self._init_channel_config()
+            # Init channel config
+            self._init_channel_config()
 
-        # Populate controls
-        self._populate_grid_controls()
-        self._populate_image_controls()
-        self._populate_data_controls()
+            # Populate controls
+            self._populate_grid_controls()
+            self._populate_image_controls()
+            self._populate_data_controls()
 
-        # Initial render
-        self._update_grid()
-        self._schedule_image_refresh()
+            # Initial render
+            self._update_grid()
+            self._schedule_image_refresh()
+        except Exception:
+            _log.exception("Failed to initialize UI for dataset %s", p)
 
     # ── Channel Config ───────────────────────────────────────────────────────
 
@@ -656,7 +518,7 @@ class MainWindow(QMainWindow):
         try:
             tables = self._dm.get_profiling_tables()
             import sqlite3
-            db_path = str(Path(self._dm._root_dir) / "results.db")
+            db_path = str(Path(self._dm.root_dir) / "results.db")
             conn = sqlite3.connect(db_path)
             for tname in tables:
                 df = self._dm.get_table_df(tname)
@@ -743,12 +605,14 @@ class MainWindow(QMainWindow):
             col_val = (col_name, is_num)
         else:
             table_name = ""
+            col_name = None
             col_val = (None, False)
 
         # Pre-compute metadata data_map for grid (metadata isn't in the DB)
         metadata_map: dict[str, float | str] | None = None
         if (
             table_name == "metadata"
+            and col_name is not None
             and self._metadata_merged is not None
             and col_name in self._metadata_merged.columns
         ):
@@ -924,47 +788,24 @@ class MainWindow(QMainWindow):
         saved_state = self._image_display.save_view_state()
 
         if change == "sort":
-            self._refresh_resort(thumb_size, saved_state, sort_by_row)
+            self._image_display.resort_cached(
+                thumb_size, self._overlay_alpha, self._overlay_cmap,
+                saved_state, sort_by_row,
+            )
             return
 
-        if change == "image_size":
-            self._refresh_resize(thumb_size, saved_state, sort_by_row)
-            return
-
-        if change == "overlay" and self._raw_cache:
-            self._refresh_overlay(thumb_size, saved_state, sort_by_row)
-            return
-
-        if change == "contrast" and self._raw_cache:
-            self._refresh_from_raw(thumb_size, saved_state, sort_by_row)
-            return
-
-        # Full pipeline: filters changed or no cache available
-        self._refresh_full(thumb_size, saved_state, sort_by_row)
-
-    def _refresh_resort(self, thumb_size, saved_state, sort_by_row) -> None:
-        """Sort changed — just rearrange cached results, no reprocessing."""
-        self._image_display.resort_cached(
-            thumb_size, self._overlay_alpha, self._overlay_cmap,
-            saved_state, sort_by_row,
+        # For overlay/contrast/resize changes with cache available, skip disk I/O
+        use_cache = (
+            change in ("overlay", "contrast", "image_size")
+            and bool(self._raw_cache)
         )
+        if not use_cache:
+            self._raw_cache.clear()
 
-    def _refresh_resize(self, thumb_size, saved_state, sort_by_row) -> None:
-        """Thumbnail size changed — reprocess from raw cache at new size."""
-        if self._raw_cache:
-            self._refresh_from_raw(thumb_size, saved_state, sort_by_row)
-        else:
-            self._refresh_full(thumb_size, saved_state, sort_by_row)
+        self._dispatch_image_workers(thumb_size)
 
-    def _refresh_overlay(self, thumb_size, saved_state, sort_by_row) -> None:
-        """Overlay changed — reprocess from raw cache (skip disk read)."""
-        if self._raw_cache:
-            self._refresh_from_raw(thumb_size, saved_state, sort_by_row)
-        else:
-            self._refresh_full(thumb_size, saved_state, sort_by_row)
-
-    def _refresh_from_raw(self, thumb_size, saved_state, sort_by_row) -> None:
-        """Contrast/overlay changed — use cached raw images, skip disk I/O."""
+    def _dispatch_image_workers(self, thumb_size: int) -> None:
+        """Load images and dispatch background workers for processing."""
         self._cancel_workers()
         self._ch_config = self._image_controls.get_channel_config()
 
@@ -988,6 +829,7 @@ class MainWindow(QMainWindow):
         channel_names = list(self._ch_config.keys())
         dmax = DTYPE_MAX.get(str(self._dm.img_dtype), 65535.0)
         need_polygons = self._overlay_col is not None and self._overlay_table is not None
+        sort_by_row = self._image_controls.sort_by_row.isChecked()
 
         for row_idx, well, field, stack, tp in rows_info:
             raw_data = self._raw_cache.get(row_idx)
@@ -1000,66 +842,20 @@ class MainWindow(QMainWindow):
                     self._pending_workers = max(0, self._pending_workers - 1)
                     continue
 
-            worker = _ImageWorker(
-                row_idx, well, field, stack, tp,
-                raw_data, thumb_size,
-                channel_names, self._ch_config, dmax,
-                self._contrast_method, self._contrast_gamma, self._invert,
-                need_polygons,
-                overlay_values.get(well), self._overlay_col,
-                object_counts.get(well), per_object_values.get(well, {}),
-                gen, sort_by_row,
+            config = ImageWorkerConfig(
+                row_idx=row_idx, well=well, field=field, stack=stack, tp=tp,
+                raw_data=raw_data, thumb_size=thumb_size,
+                channel_names=channel_names, ch_config=self._ch_config, dmax=dmax,
+                contrast_method=self._contrast_method,
+                contrast_gamma=self._contrast_gamma, invert=self._invert,
+                need_polygons=need_polygons,
+                overlay_val=overlay_values.get(well),
+                overlay_col=self._overlay_col,
+                n_objects=object_counts.get(well),
+                obj_values=per_object_values.get(well, {}),
+                gen=gen, sort_by_row=sort_by_row,
             )
-            worker.signals.finished.connect(self._on_worker_finished, Qt.QueuedConnection)
-            worker.signals.error.connect(self._on_worker_error, Qt.QueuedConnection)
-            self._thread_pool.start(worker)
-
-    def _refresh_full(self, thumb_size, saved_state, sort_by_row) -> None:
-        """Full pipeline: load from disk, process, display."""
-        self._cancel_workers()
-        self._raw_cache.clear()
-        self._ch_config = self._image_controls.get_channel_config()
-
-        wells = sorted(self._selected_wells)
-        fields_int = [int(f) for f in self._image_controls.get_selected_fields()]
-        stacks_int = [int(s) for s in self._image_controls.get_selected_stacks()]
-        tps_int = [int(t) for t in self._image_controls.get_selected_tps()]
-        rows_info = self._dm.lookup_row_indices(wells, fields_int, stacks_int, tps_int)
-        from natsort import natsort_key
-        rows_info.sort(key=lambda r: (natsort_key(str(r[1])), r[2], r[3], r[4]))
-
-        if not rows_info:
-            self._image_display.clear()
-            return
-
-        overlay_values, object_counts, per_object_values = self._compute_overlay_data()
-
-        self._image_display.begin_results(thumb_size)
-        self._pending_workers = len(rows_info)
-        gen = self._gen
-        channel_names = list(self._ch_config.keys())
-        dmax = DTYPE_MAX.get(str(self._dm.img_dtype), 65535.0)
-        need_polygons = self._overlay_col is not None and self._overlay_table is not None
-
-        for row_idx, well, field, stack, tp in rows_info:
-            try:
-                raw_data = self._dm.get_imageset(row_idx)
-                self._cache_put(row_idx, raw_data)
-            except Exception:
-                _log.warning("Failed to load image row %d", row_idx, exc_info=True)
-                self._pending_workers = max(0, self._pending_workers - 1)
-                continue
-
-            worker = _ImageWorker(
-                row_idx, well, field, stack, tp,
-                raw_data, thumb_size,
-                channel_names, self._ch_config, dmax,
-                self._contrast_method, self._contrast_gamma, self._invert,
-                need_polygons,
-                overlay_values.get(well), self._overlay_col,
-                object_counts.get(well), per_object_values.get(well, {}),
-                gen, sort_by_row,
-            )
+            worker = ImageWorker(config)
             worker.signals.finished.connect(self._on_worker_finished, Qt.QueuedConnection)
             worker.signals.error.connect(self._on_worker_error, Qt.QueuedConnection)
             self._thread_pool.start(worker)

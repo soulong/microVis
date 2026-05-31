@@ -25,8 +25,8 @@ class WellGridControls(QScrollArea):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setMinimumWidth(200)
-        self.setMaximumWidth(260)
+        self.setMinimumWidth(260)
+        self.setMaximumWidth(320)
 
         container = QWidget()
         container.setStyleSheet("""

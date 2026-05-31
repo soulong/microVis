@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
     QDoubleSpinBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -107,16 +108,19 @@ class ImageControls(QScrollArea):
     label_class_selection_changed = Signal()  # selected classes changed
     label_write_clicked = Signal()          # write to db requested
 
+    # Object export signals
+    export_clicked = Signal()               # export button pressed
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setMinimumWidth(200)
-        self.setMaximumWidth(260)
+        self.setMinimumWidth(260)
+        self.setMaximumWidth(320)
 
         container = QWidget()
         container.setStyleSheet("""
-            QComboBox, QDoubleSpinBox, QSlider {
+            QComboBox, QDoubleSpinBox, QSpinBox, QSlider {
                 min-height: 18px;
                 max-height: 22px;
                 font-size: 8pt;
@@ -130,31 +134,47 @@ class ImageControls(QScrollArea):
                 font-size: 9pt;
                 padding: 2px 6px;
             }
+            QGroupBox {
+                font-size: 8pt;
+                font-weight: bold;
+                color: #5a8a9a;
+                border: 1px solid #3a3a4a;
+                border-radius: 4px;
+                margin-top: 8px;
+                padding-top: 14px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+            }
         """)
         self._layout = QVBoxLayout(container)
         self._layout.setContentsMargins(6, 6, 6, 6)
-        self._layout.setSpacing(3)
+        self._layout.setSpacing(4)
 
         # ── Image Filters ──
-        self._section("Image Filters")
-        self._filter_container = QVBoxLayout()
-        self._filter_container.setSpacing(2)
-        self._layout.addLayout(self._filter_container)
+        grp_filters = QGroupBox("Image Filters")
+        filter_layout = QVBoxLayout(grp_filters)
+        filter_layout.setSpacing(2)
+        self._filter_container = filter_layout
         self._fields_widget: _MultiSelectCombo | None = None
         self._stacks_widget: _MultiSelectCombo | None = None
         self._tps_widget: _MultiSelectCombo | None = None
-        self._layout.addSpacing(6)
+        self._layout.addWidget(grp_filters)
 
-        # ── Channel Controls ──
-        self._section("Channel Setting")
-        self._ch_layout = QVBoxLayout()
-        self._ch_layout.setSpacing(2)
-        self._layout.addLayout(self._ch_layout)
+        # ── Channel Setting ──
+        grp_channels = QGroupBox("Channel Setting")
+        ch_layout = QVBoxLayout(grp_channels)
+        ch_layout.setSpacing(2)
+
+        # Channel controls container (dynamic, cleared on set_channels)
+        self._ch_container = QVBoxLayout()
+        self._ch_container.setSpacing(2)
+        ch_layout.addLayout(self._ch_container)
         self._channel_widgets: dict[str, ChannelControls] = {}
-        self._layout.addSpacing(6)
 
-        # ── Global Adjustments ──
-        def _row(label_text, widget):
+        def _row(label_text, widget, target_layout=ch_layout):
             r = QHBoxLayout()
             r.setSpacing(4)
             r.setContentsMargins(0, 0, 0, 0)
@@ -162,7 +182,7 @@ class ImageControls(QScrollArea):
             lbl.setFixedWidth(60)
             r.addWidget(lbl)
             r.addWidget(widget, stretch=1)
-            self._layout.addLayout(r)
+            target_layout.addLayout(r)
 
         # Low / High
         lowhigh_row = QHBoxLayout()
@@ -185,7 +205,7 @@ class ImageControls(QScrollArea):
         self._auto_high.setDecimals(2)
         self._auto_high.setButtonSymbols(QDoubleSpinBox.NoButtons)
         lowhigh_row.addWidget(self._auto_high, stretch=1)
-        self._layout.addLayout(lowhigh_row)
+        ch_layout.addLayout(lowhigh_row)
 
         self._auto_low.valueChanged.connect(lambda: self.auto_range_changed.emit())
         self._auto_high.valueChanged.connect(lambda: self.auto_range_changed.emit())
@@ -205,7 +225,7 @@ class ImageControls(QScrollArea):
         self._reset_btn.clicked.connect(self.reset_requested)
         btn_row.addWidget(self._reset_btn)
         btn_row.addStretch()
-        self._layout.addLayout(btn_row)
+        ch_layout.addLayout(btn_row)
 
         # Image size
         self._image_size = NoScrollDoubleSpinBox()
@@ -238,7 +258,7 @@ class ImageControls(QScrollArea):
         self._sort_by_row.setStyleSheet("font-size: 8pt; spacing: 4px;")
         self._sort_by_row.toggled.connect(lambda: self.sort_mode_changed.emit())
         sort_row.addWidget(self._sort_by_row)
-        self._layout.addLayout(sort_row)
+        ch_layout.addLayout(sort_row)
 
         self._gamma_slider = NoScrollSlider(Qt.Horizontal)
         self._gamma_slider.setRange(10, 300)
@@ -252,12 +272,14 @@ class ImageControls(QScrollArea):
         self._gamma_slider.valueChanged.connect(
             lambda v: self._gamma_slider_label.setText(f"Gamma: {v / 100:.2f}")
         )
-        self._layout.addWidget(self._gamma_slider_label)
-        self._layout.addWidget(self._gamma_slider)
+        ch_layout.addWidget(self._gamma_slider_label)
+        ch_layout.addWidget(self._gamma_slider)
+        self._layout.addWidget(grp_channels)
 
         # ── Object Overlay ──
-        self._layout.addSpacing(8)
-        self._section("Object Overlay")
+        grp_overlay = QGroupBox("Object Overlay")
+        overlay_layout = QVBoxLayout(grp_overlay)
+        overlay_layout.setSpacing(3)
 
         self._overlay_col = NoScrollComboBox()
         self._overlay_col.setEditable(True)
@@ -265,24 +287,26 @@ class ImageControls(QScrollArea):
         self._overlay_col.completer().setFilterMode(Qt.MatchContains)
         self._overlay_col.completer().setCompletionMode(QCompleter.PopupCompletion)
         self._overlay_col.lineEdit().setPlaceholderText("Type to filter...")
-        _row("Color by", self._overlay_col)
+        _row("Color by", self._overlay_col, overlay_layout)
 
         self._overlay_cmap = NoScrollComboBox()
-        _row("Colors", self._overlay_cmap)
+        _row("Colors", self._overlay_cmap, overlay_layout)
 
         self._overlay_alpha = NoScrollSlider(Qt.Horizontal)
         self._overlay_alpha.setRange(0, 100)
         self._overlay_alpha.setValue(40)
-        _row("Alpha", self._overlay_alpha)
+        _row("Alpha", self._overlay_alpha, overlay_layout)
+        self._layout.addWidget(grp_overlay)
 
         # ── Object Label ──
-        self._layout.addSpacing(8)
-        self._section("Object Label")
+        grp_label = QGroupBox("Object Label")
+        label_layout = QVBoxLayout(grp_label)
+        label_layout.setSpacing(3)
 
         # Mask selector
         self._label_mask = NoScrollComboBox()
         self._label_mask.currentTextChanged.connect(self._on_label_mask_changed)
-        _row("Mask", self._label_mask)
+        _row("Mask", self._label_mask, label_layout)
 
         # Class name input + Add button
         class_input_row = QHBoxLayout()
@@ -310,7 +334,7 @@ class ImageControls(QScrollArea):
         self._remove_class_btn.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
         self._remove_class_btn.clicked.connect(self._on_remove_class)
         class_input_row.addWidget(self._remove_class_btn)
-        self._layout.addLayout(class_input_row)
+        label_layout.addLayout(class_input_row)
 
         # Selected classes (multi-select dropdown)
         self._class_select_label = QLabel("Selected classes")
@@ -318,7 +342,7 @@ class ImageControls(QScrollArea):
             "font-size: 8pt; color: #aaaaaa; padding-top: 2px;"
         )
         self._class_select_label.setVisible(False)
-        self._layout.addWidget(self._class_select_label)
+        label_layout.addWidget(self._class_select_label)
 
         self._class_select_scroll = QScrollArea()
         self._class_select_scroll.setWidgetResizable(True)
@@ -337,7 +361,7 @@ class ImageControls(QScrollArea):
         self._class_checkboxes: dict[str, QCheckBox] = {}
         self._class_select_layout.addStretch()
         self._class_select_scroll.setWidget(self._class_select_container)
-        self._layout.addWidget(self._class_select_scroll)
+        label_layout.addWidget(self._class_select_scroll)
 
         # Table name input
         table_row = QHBoxLayout()
@@ -351,9 +375,9 @@ class ImageControls(QScrollArea):
             "min-height: 18px; max-height: 22px; font-size: 8pt; padding: 2px 3px;"
         )
         table_row.addWidget(self._label_table_name, stretch=1)
-        self._layout.addLayout(table_row)
+        label_layout.addLayout(table_row)
 
-        # Save Label button (centered, 1.5x width of Auto)
+        # Save Label button (centered)
         write_btn_row = QHBoxLayout()
         write_btn_row.setSpacing(8)
         write_btn_row.addStretch()
@@ -363,15 +387,88 @@ class ImageControls(QScrollArea):
         self._write_labels_btn.clicked.connect(self.label_write_clicked)
         write_btn_row.addWidget(self._write_labels_btn)
         write_btn_row.addStretch()
-        self._layout.addLayout(write_btn_row)
+        label_layout.addLayout(write_btn_row)
+        self._layout.addWidget(grp_label)
+
+        # ── Object Export ──
+        grp_export = QGroupBox("Object Export")
+        export_layout = QVBoxLayout(grp_export)
+        export_layout.setSpacing(3)
+
+        # Object mask selection dropdown
+        self._export_mask_combo = NoScrollComboBox()
+        _row("Object", self._export_mask_combo, export_layout)
+
+        # Object range selection dropdown
+        self._export_object_combo = NoScrollComboBox()
+        self._export_object_combo.addItems([
+            "All displayed",
+            "All images",
+            "All annotated",
+        ])
+        self._export_object_combo.setCurrentIndex(0)
+        self._export_object_combo.setToolTip(
+            "All displayed: objects from currently shown images\n"
+            "All images: all objects from the entire dataset\n"
+            "All annotated: only manually class-labeled objects"
+        )
+        _row("Obj range", self._export_object_combo, export_layout)
+
+        # Channel processing dropdown
+        self._export_channel_combo = NoScrollComboBox()
+        self._export_channel_combo.addItems([
+            "Single channel",
+            "Multiple channels",
+        ])
+        self._export_channel_combo.setCurrentIndex(0)
+        self._export_channel_combo.setToolTip(
+            "Single channel: export each channel as separate YX image\n"
+            "Multiple channels: export as multi-channel CYX image"
+        )
+        _row("Channel", self._export_channel_combo, export_layout)
+
+        # Save directory selection
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(4)
+        dir_row.setContentsMargins(0, 0, 0, 0)
+        lbl_dir = QLabel("Save dir")
+        lbl_dir.setFixedWidth(60)
+        dir_row.addWidget(lbl_dir)
+        self._export_dir_input = QLineEdit()
+        self._export_dir_input.setPlaceholderText("objects_exported")
+        self._export_dir_input.setStyleSheet(
+            "min-height: 18px; max-height: 22px; font-size: 8pt; padding: 2px 3px;"
+        )
+        dir_row.addWidget(self._export_dir_input, stretch=1)
+        self._export_dir_btn = QPushButton("...")
+        self._export_dir_btn.setProperty("class", "secondary")
+        self._export_dir_btn.setFixedSize(24, 20)
+        self._export_dir_btn.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
+        self._export_dir_btn.clicked.connect(self._on_browse_export_dir)
+        dir_row.addWidget(self._export_dir_btn)
+        export_layout.addLayout(dir_row)
+
+        # Export button (centered)
+        export_btn_row = QHBoxLayout()
+        export_btn_row.setSpacing(8)
+        export_btn_row.addStretch()
+        self._export_btn = QPushButton("Export")
+        self._export_btn.setProperty("class", "secondary")
+        self._export_btn.setFixedSize(96, 24)
+        self._export_btn.clicked.connect(self.export_clicked)
+        export_btn_row.addWidget(self._export_btn)
+        export_btn_row.addStretch()
+        export_layout.addLayout(export_btn_row)
+        self._layout.addWidget(grp_export)
+
+        # Status label
+        self._status_label = QLabel("Ready")
+        self._status_label.setStyleSheet("color: #888; font-size: 8pt; padding: 4px;")
+        self._status_label.setWordWrap(True)
+        self._layout.addWidget(self._status_label)
 
         self._layout.addStretch()
         self.setWidget(container)
-
-    def _section(self, title: str) -> None:
-        lbl = QLabel(title)
-        lbl.setStyleSheet("font-weight: bold; color: #5a8a9a; font-size: 8pt; padding-top: 2px;")
-        self._layout.addWidget(lbl)
 
     def set_filter_options(self, fields: list[str], stacks: list[str], tps: list[str]) -> None:
         for w in [self._fields_widget, self._stacks_widget, self._tps_widget]:
@@ -403,15 +500,15 @@ class ImageControls(QScrollArea):
         for w in self._channel_widgets.values():
             w.deleteLater()
         self._channel_widgets.clear()
-        while self._ch_layout.count():
-            item = self._ch_layout.takeAt(0)
+        while self._ch_container.count():
+            item = self._ch_container.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
         for ch_name, cfg in ch_config.items():
             row = ChannelControls(ch_name, cfg)
             row.config_changed.connect(lambda ch=ch_name: self.channel_config_changed.emit())
-            self._ch_layout.addWidget(row)
+            self._ch_container.addWidget(row)
             self._channel_widgets[ch_name] = row
 
     def get_channel_config(self) -> dict:
@@ -489,6 +586,12 @@ class ImageControls(QScrollArea):
         self._label_mask.clear()
         self._label_mask.addItems(mask_names)
         self._label_mask.blockSignals(False)
+
+        # Also populate export mask dropdown
+        self._export_mask_combo.blockSignals(True)
+        self._export_mask_combo.clear()
+        self._export_mask_combo.addItems(mask_names)
+        self._export_mask_combo.blockSignals(False)
         # Set initial table name default
         if mask_names:
             self._label_table_name.setText(f"{mask_names[0]}_label")
@@ -552,3 +655,52 @@ class ImageControls(QScrollArea):
             self._class_select_label.setVisible(False)
             self._class_select_scroll.setVisible(False)
         self.label_class_removed.emit(name)
+
+    # ── Object Export API ──────────────────────────────────────────────
+
+    def _on_browse_export_dir(self) -> None:
+        """Open directory dialog for export save location."""
+        from PySide6.QtWidgets import QFileDialog
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Export Directory")
+        if dir_path:
+            self._export_dir_input.setText(dir_path)
+
+    def get_export_mask(self) -> str:
+        """Return the selected export mask name."""
+        return self._export_mask_combo.currentText()
+
+    def get_export_object_mode(self) -> str:
+        """Return the selected object export mode."""
+        return self._export_object_combo.currentText()
+
+    def get_export_channel_mode(self) -> str:
+        """Return the selected channel export mode."""
+        return self._export_channel_combo.currentText()
+
+    def get_export_dir(self) -> str:
+        """Return the export directory path (empty = default)."""
+        return self._export_dir_input.text().strip()
+
+    def set_export_enabled(self, enabled: bool) -> None:
+        """Enable/disable export controls."""
+        self._export_btn.setEnabled(enabled)
+        self._export_mask_combo.setEnabled(enabled)
+        self._export_object_combo.setEnabled(enabled)
+        self._export_channel_combo.setEnabled(enabled)
+        self._export_dir_input.setEnabled(enabled)
+        self._export_dir_btn.setEnabled(enabled)
+
+    def update_export_annotated_option(self, has_annotations: bool) -> None:
+        """Enable/disable the 'All annotated' option based on annotation state."""
+        # Index 2 = "All annotated"
+        model = self._export_object_combo.model()
+        item = model.item(2)
+        if item:
+            item.setEnabled(has_annotations)
+        # If current selection is "All annotated" but no annotations, switch to "All displayed"
+        if not has_annotations and self._export_object_combo.currentIndex() == 2:
+            self._export_object_combo.setCurrentIndex(0)
+
+    def set_status(self, text: str) -> None:
+        """Update the status label."""
+        self._status_label.setText(text)

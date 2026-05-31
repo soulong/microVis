@@ -38,6 +38,8 @@ from microVis.widgets.pixel_info import PixelInfo
 from microVis.widgets.well_grid_canvas import WellGridCanvas
 from microVis.widgets.well_grid_controls import WellGridControls
 from microVis.worker import CropWorker, ImageWorker, ImageWorkerConfig
+from microVis.widgets.model_controls import ModelControls
+from microVis.widgets.model_view import ModelView
 
 _log = get_logger("microVis.main_window")
 
@@ -87,6 +89,13 @@ class MainWindow(QMainWindow):
         self._metadata_df: pd.DataFrame | None = None
         self._metadata_merged: pd.DataFrame | None = None
         self._current_table: str | None = None
+
+        # Model training state
+        self._model_records: list | None = None
+        self._model_summary: dict | None = None
+        self._model_state: dict | None = None
+        self._model_config: object | None = None
+        self._train_worker = None
 
         self._build_ui()
         self._connect_signals()
@@ -142,8 +151,16 @@ class MainWindow(QMainWindow):
         _plate_font.setBold(True)
         self._nav_plate.setFont(_plate_font)
 
+        self._nav_model = RotatedLabel("Model")
+        self._nav_model.setProperty("class", "nav-tab")
+        self._nav_model.setProperty("active", "false")
+        _model_font = self._nav_model.font()
+        _model_font.setBold(True)
+        self._nav_model.setFont(_model_font)
+
         nav_layout.addWidget(self._nav_data)
         nav_layout.addWidget(self._nav_plate)
+        nav_layout.addWidget(self._nav_model)
         nav_layout.addStretch()
 
         # ── Stacked content ──
@@ -156,8 +173,12 @@ class MainWindow(QMainWindow):
         # Page 1: Plate & Images
         self._stack_content.addWidget(self._build_plate_images_tab())
 
+        # Page 2: Model Training
+        self._stack_content.addWidget(self._build_model_tab())
+
         self._nav_data.clicked.connect(lambda: self._switch_tab(0))
         self._nav_plate.clicked.connect(lambda: self._switch_tab(1))
+        self._nav_model.clicked.connect(lambda: self._switch_tab(2))
 
         body.addWidget(nav)
         body.addWidget(self._stack_content, stretch=1)
@@ -174,7 +195,8 @@ class MainWindow(QMainWindow):
         self._stack_content.setCurrentIndex(index)
         self._nav_data.setProperty("active", index == 0)
         self._nav_plate.setProperty("active", index == 1)
-        for w in (self._nav_data, self._nav_plate):
+        self._nav_model.setProperty("active", index == 2)
+        for w in (self._nav_data, self._nav_plate, self._nav_model):
             w.style().unpolish(w)
             w.style().polish(w)
 
@@ -194,7 +216,7 @@ class MainWindow(QMainWindow):
         top_splitter.addWidget(self._grid_canvas)
         top_splitter.setStretchFactor(0, 0)
         top_splitter.setStretchFactor(1, 1)
-        top_splitter.setSizes([220, 600])
+        top_splitter.setSizes([280, 600])
 
         # ── Middle splitter: Image View ──
         middle_splitter = QSplitter(Qt.Horizontal)
@@ -206,7 +228,7 @@ class MainWindow(QMainWindow):
         middle_splitter.addWidget(self._image_display)
         middle_splitter.setStretchFactor(0, 0)
         middle_splitter.setStretchFactor(1, 1)
-        middle_splitter.setSizes([220, 600])
+        middle_splitter.setSizes([280, 600])
 
         # ── Label Annotation Panel ──
         self._label_panel = LabelAnnotationPanel()
@@ -221,6 +243,21 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self._v_splitter)
         return tab
+
+    def _build_model_tab(self) -> QWidget:
+        """Build the Model training tab with sidebar controls and wizard area."""
+        splitter = QSplitter(Qt.Horizontal)
+
+        self._model_controls = ModelControls()
+        self._model_view = ModelView()
+
+        splitter.addWidget(self._model_controls)
+        splitter.addWidget(self._model_view)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([280, 800])
+
+        return splitter
 
     # ── Signal Connections ───────────────────────────────────────────────────
 
@@ -264,6 +301,9 @@ class MainWindow(QMainWindow):
         ic.label_class_selection_changed.connect(self._on_label_class_selection_changed)
         ic.label_write_clicked.connect(self._on_label_write_to_db)
 
+        # Object export
+        ic.export_clicked.connect(self._on_export_clicked)
+
         # Label annotation panel crop requests
         self._label_panel.crop_requested.connect(self._on_crop_requested)
 
@@ -275,6 +315,15 @@ class MainWindow(QMainWindow):
         self._data_view.metadata_clear_clicked.connect(self._on_metadata_clear)
         self._data_view.write_to_db_clicked.connect(self._on_write_to_db)
         self._data_view.table_radio_selected.connect(self._on_data_table_changed)
+
+        # Model controls
+        mc = self._model_controls
+        mc.prepare_clicked.connect(self._on_model_prepare)
+        mc.train_clicked.connect(self._on_model_train)
+        mc.stop_clicked.connect(self._on_model_stop)
+        mc.save_model_clicked.connect(self._on_model_save)
+        mc.apply_model_clicked.connect(self._on_model_apply)
+        mc.save_results_clicked.connect(self._on_model_save_results)
 
     # ── Dataset Loading ──────────────────────────────────────────────────────
 
@@ -323,6 +372,7 @@ class MainWindow(QMainWindow):
             self._populate_image_controls()
             self._populate_data_controls()
             self._populate_label_controls()
+            self._populate_model_controls()
 
             # Initial render
             self._update_grid()
@@ -346,12 +396,13 @@ class MainWindow(QMainWindow):
 
     def _auto_range(self, low_pct: float = 1.0, high_pct: float = 99.0,
                     ch_name: str | None = None) -> tuple[float, float]:
-        """Compute percentile range across a sample of images."""
+        """Compute percentile range across currently displayed images."""
         dm = self._dm
-        wells = dm.get_wells()[:5]
-        fields = dm.get_fields()[:1]
-        stacks = dm.get_stacks()[:1]
-        tps = dm.get_timepoints()[:1]
+        ic = self._image_controls
+        wells = sorted(self._selected_wells) if self._selected_wells else dm.get_wells()
+        fields = [int(f) for f in ic.get_selected_fields()] or dm.get_fields()
+        stacks = [int(s) for s in ic.get_selected_stacks()] or dm.get_stacks()
+        tps = [int(t) for t in ic.get_selected_tps()] or dm.get_timepoints()
         rows = dm.lookup_row_indices(wells, fields, stacks, tps)
         p_lo, p_hi = 0.0, 65535.0
         if not rows:
@@ -363,14 +414,22 @@ class MainWindow(QMainWindow):
                     return p_lo, p_hi
                 samples = []
                 for row_idx, _, _, _, _ in rows:
-                    img_data, _ = dm.get_imageset(row_idx)
+                    raw_data = self._raw_cache.get(row_idx)
+                    if raw_data is None:
+                        raw_data = dm.get_imageset(row_idx)
+                        self._cache_put(row_idx, raw_data)
+                    img_data, _ = raw_data
                     if ch_idx < img_data.shape[2]:
                         samples.append(img_data[:, :, ch_idx].ravel())
                 all_pixels = np.concatenate(samples)
             else:
                 samples = []
                 for row_idx, _, _, _, _ in rows:
-                    img_data, _ = dm.get_imageset(row_idx)
+                    raw_data = self._raw_cache.get(row_idx)
+                    if raw_data is None:
+                        raw_data = dm.get_imageset(row_idx)
+                        self._cache_put(row_idx, raw_data)
+                    img_data, _ = raw_data
                     samples.append(img_data.ravel())
                 all_pixels = np.concatenate(samples)
             p_lo = float(np.percentile(all_pixels, low_pct))
@@ -484,6 +543,8 @@ class MainWindow(QMainWindow):
             return
         self._image_controls.set_label_masks(self._dm.mask_names)
         self._label_panel.clear_all()
+        # Initialize export "All annotated" option as disabled
+        self._image_controls.update_export_annotated_option(False)
 
     # ── Metadata ─────────────────────────────────────────────────────────────
 
@@ -827,12 +888,13 @@ class MainWindow(QMainWindow):
         if not use_cache:
             self._raw_cache.clear()
 
-        self._dispatch_image_workers(thumb_size)
+        self._dispatch_image_workers(thumb_size, saved_state=saved_state)
 
-    def _dispatch_image_workers(self, thumb_size: int) -> None:
+    def _dispatch_image_workers(self, thumb_size: int, saved_state: dict | None = None) -> None:
         """Load images and dispatch background workers for processing."""
         self._cancel_workers()
         self._ch_config = self._image_controls.get_channel_config()
+        self._saved_state = saved_state
 
         wells = sorted(self._selected_wells)
         fields_int = [int(f) for f in self._image_controls.get_selected_fields()]
@@ -939,9 +1001,10 @@ class MainWindow(QMainWindow):
         if result.get("gen") != self._gen:
             return
         self._pending_workers = max(0, self._pending_workers - 1)
+        saved_state = getattr(self, "_saved_state", None)
         self._image_display.add_result(
             result, result["thumb_size"], self._overlay_alpha,
-            self._overlay_cmap, None, result["sort_by_row"],
+            self._overlay_cmap, saved_state, result["sort_by_row"],
         )
 
     def _on_worker_error(self, msg: str) -> None:
@@ -988,6 +1051,8 @@ class MainWindow(QMainWindow):
                 int(total * 0.50),
                 int(total * 0.25),
             ])
+        # Update export "All annotated" option availability
+        self._image_controls.update_export_annotated_option(True)
 
     def _on_label_class_removed(self, class_name: str) -> None:
         """Handle class deletion from sidebar."""
@@ -997,6 +1062,8 @@ class MainWindow(QMainWindow):
             self._label_panel.setVisible(False)
             total = sum(self._v_splitter.sizes())
             self._v_splitter.setSizes([int(total * 0.30), int(total * 0.70), 0])
+            # Update export "All annotated" option availability
+            self._image_controls.update_export_annotated_option(False)
 
     def _on_label_class_selection_changed(self) -> None:
         """Handle change in which classes are selected for display."""
@@ -1148,6 +1215,102 @@ class MainWindow(QMainWindow):
                 box.set_object_pixmap(key, pixmap)
                 break
 
+    # ── Object Export Handler ────────────────────────────────────────────────
+
+    def _on_export_clicked(self) -> None:
+        """Handle object export button click."""
+        if self._dm is None:
+            return
+
+        ic = self._image_controls
+        object_mode = ic.get_export_object_mode()
+        channel_mode = ic.get_export_channel_mode()
+        save_dir = ic.get_export_dir()
+
+        # Determine mask name from export mask dropdown
+        mask_name = ic.get_export_mask()
+        if not mask_name:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Export Error", "No mask selected for object extraction.")
+            return
+
+        # Determine save directory
+        if not save_dir:
+            save_dir = str(Path(self._dataset_dir) / "objects_exported")
+        save_path = Path(save_dir)
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        # Get annotations if needed
+        annotations = None
+        if object_mode == "All annotated":
+            annotations = self._label_panel.get_annotations()
+            if not annotations:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self, "No Annotations",
+                    "No annotated objects found. Create classes and annotate objects first.",
+                )
+                return
+
+        # Get wells/fields based on mode
+        if object_mode == "All displayed":
+            wells = sorted(self._selected_wells) if self._selected_wells else self._dm.get_wells()
+            fields = [int(f) for f in ic.get_selected_fields()]
+            stacks = [int(s) for s in ic.get_selected_stacks()]
+            tps = [int(t) for t in ic.get_selected_tps()]
+        else:  # "All images" or "All annotated"
+            wells = self._dm.get_wells()
+            fields = self._dm.get_fields()
+            stacks = self._dm.get_stacks()
+            tps = self._dm.get_timepoints()
+
+        # Disable UI during export
+        ic.set_export_enabled(False)
+        ic.set_status("Exporting objects...")
+
+        # Run export in background thread
+        self._export_gen = getattr(self, "_export_gen", 0) + 1
+        gen = self._export_gen
+
+        from microVis.worker import ObjectExportWorker
+
+        worker = ObjectExportWorker(
+            dm=self._dm,
+            wells=wells,
+            fields=fields,
+            stacks=stacks,
+            timepoints=tps,
+            mask_name=mask_name,
+            channel_names=self._dm.channels,
+            save_dir=str(save_path),
+            object_mode=object_mode,
+            channel_mode=channel_mode,
+            annotations=annotations,
+            gen=gen,
+        )
+        worker.signals.progress.connect(self._on_export_progress)
+        worker.signals.finished.connect(self._on_export_finished)
+        worker.signals.error.connect(self._on_export_error)
+        self._thread_pool.start(worker)
+
+    def _on_export_progress(self, current: int, total: int) -> None:
+        """Update export progress."""
+        self._image_controls.set_status(f"Exporting: {current}/{total} images...")
+
+    def _on_export_finished(self, result: dict) -> None:
+        """Handle export completion."""
+        self._image_controls.set_export_enabled(True)
+        count = result.get("count", 0)
+        save_dir = result.get("save_dir", "")
+        self._image_controls.set_status(f"Exported {count} objects")
+        _log.info("Exported %d objects to %s", count, save_dir)
+
+    def _on_export_error(self, msg: str) -> None:
+        """Handle export error."""
+        self._image_controls.set_export_enabled(True)
+        self._image_controls.set_status(f"Export error: {msg}")
+        _log.warning("Export error: %s", msg)
+
     # ── Data View Handler ────────────────────────────────────────────────────
 
     def _on_data_table_changed(self, table_name: str) -> None:
@@ -1167,6 +1330,517 @@ class MainWindow(QMainWindow):
         merged = df.merge(self._metadata_merged, on="well", how="left")
         other_cols = [c for c in merged.columns if c not in meta_cols and c != "well"]
         return merged[["well"] + meta_cols + other_cols]
+
+    # ── Model Tab Handlers ────────────────────────────────────────────────────
+
+    def _populate_model_controls(self) -> None:
+        """Populate model controls when dataset is loaded."""
+        if self._dm is None:
+            return
+        mc = self._model_controls
+        mc.set_masks(self._dm.mask_names)
+        mc.set_gpu_info(self._detect_gpu())
+        mc.set_state("idle")
+        self._model_view.clear()
+
+    def _detect_gpu(self) -> str:
+        """Detect available GPU devices."""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                n = torch.cuda.device_count()
+                lines = [f"CUDA available: {n} device(s)"]
+                for i in range(n):
+                    name = torch.cuda.get_device_name(i)
+                    mem = torch.cuda.get_device_properties(i).total_mem / (1024 ** 3)
+                    lines.append(f"  [{i}] {name} ({mem:.1f} GB)")
+                return "\n".join(lines)
+            return "CUDA not available — using CPU"
+        except ImportError:
+            return "PyTorch not installed"
+
+    def _on_model_prepare(self) -> None:
+        """Prepare dataset for training."""
+        if self._dm is None:
+            return
+
+        config = self._model_controls.get_config()
+        mask_name = config["mask_name"]
+        if not mask_name:
+            self._model_controls.set_status("Please select a mask.")
+            return
+
+        mode = config["mode"]
+        crop_size = config["crop_size"]
+        channels = self._dm.channels
+
+        # Get annotations for supervised mode
+        annotations = None
+        if mode == "supervised":
+            if config["source"] == "Image tab annotations":
+                annotations = self._label_panel.get_annotations()
+                if not annotations:
+                    self._model_controls.set_status(
+                        "No annotations found. Create classes and annotate objects in the Image tab first."
+                    )
+                    return
+            # else: all objects, no labels — annotations stays None for SSL
+
+        # Get wells to use
+        wells = sorted(self._selected_wells) if self._selected_wells else self._dm.get_wells()
+        fields = self._dm.get_fields()
+        stacks = self._dm.get_stacks()
+        tps = self._dm.get_timepoints()
+
+        self._model_controls.set_status("Preparing dataset...")
+        self._model_controls.set_state("idle")
+
+        # Run preparation in background
+        from microVis.processing.model_dataset import prepare_dataset
+
+        try:
+            records, summary = prepare_dataset(
+                self._dm, wells, fields, stacks, tps,
+                mask_name, channels, crop_size, annotations,
+            )
+
+            if not records:
+                self._model_controls.set_status("No objects found for training.")
+                return
+
+            self._model_records = records
+            self._model_summary = {
+                "total_objects": summary.total_objects,
+                "class_counts": summary.class_counts,
+                "n_classes": summary.n_classes,
+                "train_count": summary.train_count,
+                "val_count": summary.val_count,
+                "test_count": summary.test_count,
+                "crop_size": summary.crop_size,
+                "n_channels": summary.n_channels,
+                "channel_names": summary.channel_names,
+                "has_labels": summary.has_labels,
+            }
+
+            # Generate sample crops for preview
+            sample_crops = self._generate_sample_crops(records[:16], crop_size)
+
+            # Update view
+            self._model_view.set_preview_data(self._model_summary, sample_crops)
+            self._model_view.set_step(0)
+
+            # Update num_classes in config
+            config["num_classes"] = summary.n_classes
+
+            self._model_controls.set_state("prepared")
+            self._model_controls.set_status(
+                f"Prepared: {summary.total_objects} objects, "
+                f"{summary.n_classes} classes, "
+                f"Train={summary.train_count} Val={summary.val_count} Test={summary.test_count}"
+            )
+
+        except Exception as e:
+            _log.exception("Failed to prepare model dataset")
+            self._model_controls.set_status(f"Error: {e}")
+
+    def _generate_sample_crops(self, records, crop_size):
+        """Generate sample crop thumbnails for preview."""
+        from microVis.processing.model_dataset import extract_object_crops
+        import numpy as np
+
+        crops = []
+        seen_rows = set()
+        for rec in records:
+            if rec.row_idx in seen_rows:
+                continue
+            seen_rows.add(rec.row_idx)
+            try:
+                img_data, mask_dict = self._dm.get_imageset_with_masks(
+                    rec.row_idx, channels=self._dm.channels,
+                    masks=[f"mask_{self._model_controls.get_config()['mask_name']}"],
+                )
+                mask = mask_dict.get(f"mask_{self._model_controls.get_config()['mask_name']}")
+                if mask is None:
+                    continue
+                results = extract_object_crops(
+                    img_data, mask, self._dm.channels, crop_size,
+                )
+                for crop_tensor, label_id, bbox in results[:4]:
+                    crops.append(crop_tensor)
+                if len(crops) >= 16:
+                    break
+            except Exception:
+                continue
+        return crops[:16]
+
+    def _on_model_train(self) -> None:
+        """Start model training."""
+        if self._model_records is None:
+            return
+
+        config = self._model_controls.get_config()
+        self._model_controls.set_state("training")
+        self._model_view.set_step(1)
+        self._model_view.init_training_charts()
+
+        # Build train/val record lists
+        train_records = [r for r in self._model_records if r.split == "train"]
+        val_records = [r for r in self._model_records if r.split == "val"]
+
+        from microVis.processing.model_worker import TrainConfig, TrainWorker
+
+        train_config = TrainConfig(
+            mode=config["mode"],
+            backbone=config["backbone"],
+            num_classes=config.get("num_classes", 2),
+            in_channels=len(self._dm.channels),
+            crop_size=config["crop_size"],
+            pretrained=config["pretrained"],
+            epochs=config["epochs"],
+            batch_size=config["batch_size"],
+            learning_rate=config["learning_rate"],
+            optimizer=config["optimizer"],
+            scheduler=config["scheduler"],
+            early_stopping_patience=config["early_stopping_patience"],
+            ssl_method=config["ssl_method"],
+            ssl_temperature=config["ssl_temperature"],
+            device=config["device"],
+        )
+
+        self._train_worker = TrainWorker(
+            train_config, train_records, val_records,
+            self._dm, config["mask_name"], self._dm.channels,
+        )
+
+        # Connect signals
+        w = self._train_worker
+        w.signals.epoch_done.connect(self._on_train_epoch_done)
+        w.signals.progress.connect(self._on_train_progress)
+        w.signals.log_message.connect(self._on_train_log)
+        w.signals.finished.connect(self._on_train_finished)
+        w.signals.error.connect(self._on_train_error)
+
+        self._on_train_log("Starting training...")
+        self._thread_pool.start(w)
+
+    def _on_model_stop(self) -> None:
+        """Request training stop."""
+        if self._train_worker is not None:
+            self._train_worker.request_stop()
+            self._on_train_log("Stop requested...")
+
+    def _on_train_epoch_done(self, epoch: int, metrics: dict) -> None:
+        """Update UI with per-epoch metrics."""
+        self._model_view.update_epoch(epoch, metrics)
+
+    def _on_train_progress(self, current: int, total: int) -> None:
+        """Update progress bar."""
+        self._model_view.update_progress(current, total)
+
+    def _on_train_log(self, message: str) -> None:
+        """Append to training log."""
+        self._model_view.append_log(message)
+
+    def _on_train_finished(self, result: dict) -> None:
+        """Handle training completion."""
+        self._model_state = result.get("model_state")
+        self._model_config = result.get("config")
+        self._train_worker = None
+
+        self._model_controls.set_state("trained")
+        self._model_controls.set_status(
+            f"Training complete. Best val_acc={result.get('best_val_acc', 0):.3f}"
+        )
+
+        # Show results
+        self._model_view.set_step(2)
+
+        config = self._model_config
+        mode = getattr(config, "mode", None) or (config.get("mode") if isinstance(config, dict) else None)
+        if mode == "supervised":
+            # Run final validation for confusion matrix
+            self._show_sl_results(result)
+        else:
+            self._show_ssl_results(result)
+
+    def _show_sl_results(self, result: dict) -> None:
+        """Display supervised learning results."""
+        from microVis.processing.model_eval import compute_classification_metrics
+        from microVis.processing.model_worker import _CropTorchDataset
+        import numpy as np
+        import torch
+
+        config = result["config"]
+        val_records = [r for r in self._model_records if r.split == "val"]
+
+        if not val_records:
+            return
+
+        # Quick validation pass for confusion matrix
+        ds = _CropTorchDataset(
+            val_records, self._dm, self._model_controls.get_config()["mask_name"],
+            self._dm.channels, config.crop_size, augment=False,
+        )
+        loader = torch.utils.data.DataLoader(ds, batch_size=config.batch_size, shuffle=False)
+
+        model = None
+        try:
+            from microVis.processing.model_arch import create_sl_model
+            model = create_sl_model(
+                config.backbone, config.num_classes, config.in_channels, pretrained=False,
+            )
+            model.load_state_dict(result["model_state"])
+            device = torch.device(config.device)
+            model = model.to(device)
+            model.eval()
+
+            all_preds = []
+            all_labels = []
+            with torch.no_grad():
+                for inputs, labels in loader:
+                    inputs = inputs.to(device)
+                    outputs = model(inputs)
+                    preds = outputs.argmax(dim=1)
+                    all_preds.extend(preds.cpu().numpy())
+                    all_labels.extend(labels.numpy())
+
+            class_names = sorted(set(
+                r.class_name for r in self._model_records if r.class_name
+            ))
+            if not class_names:
+                class_names = [f"Class {i}" for i in range(config.num_classes)]
+
+            metrics = compute_classification_metrics(
+                np.array(all_labels), np.array(all_preds), class_names,
+            )
+
+            # Get sample crops for display
+            sample_crops = []
+            sample_preds = []
+            for i, rec in enumerate(val_records[:12]):
+                try:
+                    ds_item = ds[i]
+                    if isinstance(ds_item, tuple):
+                        crop = ds_item[0].numpy()
+                    else:
+                        crop = ds_item.numpy()
+                    sample_crops.append(crop)
+                    pred_name = class_names[all_preds[i]] if all_preds[i] < len(class_names) else "?"
+                    true_name = rec.class_name or "?"
+                    sample_preds.append(f"P:{pred_name}\nT:{true_name}")
+                except Exception:
+                    pass
+
+            self._model_view.set_results_sl(metrics, class_names, sample_crops, sample_preds)
+
+        except Exception as e:
+            _log.warning("Failed to generate SL results: %s", e)
+            self._model_view._results_summary.setText(f"Results unavailable: {e}")
+
+    def _show_ssl_results(self, result: dict) -> None:
+        """Display SSL results with UMAP embedding plot."""
+        import numpy as np
+
+        config = result["config"]
+        val_records = [r for r in self._model_records if r.split == "val"]
+
+        if not val_records or self._model_state is None:
+            return
+
+        try:
+            from microVis.processing.model_arch import create_embedding_model
+            from microVis.processing.model_worker import _CropTorchDataset
+            from microVis.processing.model_eval import compute_embedding_quality, reduce_embeddings
+            import torch
+
+            model = create_embedding_model(
+                config.backbone, config.in_channels, pretrained=False,
+            )
+            model.load_state_dict(self._model_state)
+            device = torch.device(config.device)
+            model = model.to(device)
+            model.eval()
+
+            ds = _CropTorchDataset(
+                val_records, self._dm, self._model_controls.get_config()["mask_name"],
+                self._dm.channels, config.crop_size, augment=False,
+            )
+            loader = torch.utils.data.DataLoader(ds, batch_size=config.batch_size, shuffle=False)
+
+            all_embeddings = []
+            with torch.no_grad():
+                for batch in loader:
+                    if isinstance(batch, (list, tuple)):
+                        inputs = batch[0]
+                    else:
+                        inputs = batch
+                    inputs = inputs.to(device)
+                    features = model(inputs)
+                    all_embeddings.append(features.cpu().numpy())
+
+            embeddings = np.concatenate(all_embeddings, axis=0)
+
+            # Get labels if available
+            labels = None
+            class_names = None
+            if any(r.class_name for r in val_records):
+                label_map = {r.class_name: i for i, r in enumerate(val_records) if r.class_name}
+                class_names = sorted(label_map.keys())
+                labels = np.array([
+                    label_map.get(r.class_name, 0) for r in val_records
+                ])
+
+            # Reduce to 2D
+            embeddings_2d = reduce_embeddings(embeddings, method="umap")
+
+            # Compute quality metrics
+            quality = compute_embedding_quality(embeddings, labels)
+
+            self._model_view.set_results_ssl(
+                embeddings_2d, labels, class_names, quality,
+            )
+
+        except Exception as e:
+            _log.warning("Failed to generate SSL results: %s", e)
+            self._model_view._results_summary.setText(f"Results unavailable: {e}")
+
+    def _on_train_error(self, msg: str) -> None:
+        """Handle training error."""
+        self._train_worker = None
+        self._model_controls.set_state("prepared")
+        self._model_controls.set_status(f"Training error: {msg}")
+        self._on_train_log(f"ERROR: {msg}")
+
+    def _on_model_save(self) -> None:
+        """Save the trained model to disk."""
+        if self._model_state is None or self._model_config is None:
+            return
+
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        import torch
+        from datetime import datetime
+
+        # Default save path
+        default_name = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pt"
+        default_dir = str(Path(self._dataset_dir) / "models") if self._dataset_dir else ""
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Model", str(Path(default_dir) / default_name),
+            "PyTorch Model (*.pt)",
+        )
+        if not path:
+            return
+
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            save_data = {
+                "model_state": self._model_state,
+                "config": self._model_config.__dict__,
+                "channels": self._dm.channels,
+                "mask_name": self._model_controls.get_config()["mask_name"],
+            }
+            torch.save(save_data, path)
+            self._model_controls.set_status(f"Model saved to {path}")
+            self._on_train_log(f"Model saved to {path}")
+        except Exception as e:
+            _log.exception("Failed to save model")
+            QMessageBox.warning(self, "Save Failed", f"Failed to save model: {e}")
+
+    def _on_model_apply(self) -> None:
+        """Apply the trained model to data."""
+        if self._model_state is None or self._model_config is None:
+            return
+
+        config = self._model_controls.get_config()
+        mask_name = config["mask_name"]
+
+        # Get records for inference
+        wells = sorted(self._selected_wells) if self._selected_wells else self._dm.get_wells()
+        fields = self._dm.get_fields()
+        stacks = self._dm.get_stacks()
+        tps = self._dm.get_timepoints()
+
+        self._model_controls.set_status("Running inference...")
+
+        from microVis.processing.model_dataset import prepare_dataset
+        from microVis.processing.model_worker import InferenceWorker, TrainConfig
+
+        try:
+            # Use None annotations to get all objects
+            records, _ = prepare_dataset(
+                self._dm, wells, fields, stacks, tps,
+                mask_name, self._dm.channels,
+                self._model_config.crop_size, None,
+            )
+
+            if not records:
+                self._model_controls.set_status("No objects found for inference.")
+                return
+
+            # Build TrainConfig from saved config
+            cfg = self._model_config
+            if isinstance(cfg, dict):
+                train_config = TrainConfig(**cfg)
+            else:
+                train_config = cfg
+
+            mode = "embed" if config["mode"] == "self_supervised" else "predict"
+
+            worker = InferenceWorker(
+                train_config, self._model_state, records,
+                self._dm, mask_name, self._dm.channels, mode=mode,
+            )
+            worker.signals.progress.connect(self._on_train_progress)
+            worker.signals.log_message.connect(self._on_train_log)
+            worker.signals.finished.connect(self._on_inference_finished)
+            worker.signals.error.connect(self._on_train_error)
+
+            self._thread_pool.start(worker)
+
+        except Exception as e:
+            _log.exception("Failed to run inference")
+            self._model_controls.set_status(f"Inference error: {e}")
+
+    def _on_inference_finished(self, result) -> None:
+        """Handle inference completion."""
+        self._model_view.set_apply_results(result)
+        self._model_view.set_step(3)
+        self._model_controls.set_state("applied")
+        self._model_controls.set_status(f"Inference complete: {len(result)} objects")
+
+        # Store for DB save
+        self._inference_result = result
+
+    def _on_model_save_results(self) -> None:
+        """Save inference results to database."""
+        if not hasattr(self, "_inference_result") or self._inference_result is None:
+            return
+
+        from PySide6.QtWidgets import QMessageBox
+
+        df = self._inference_result
+        config = self._model_controls.get_config()
+
+        if config["mode"] == "self_supervised":
+            table_name = "model_embeddings"
+        else:
+            table_name = "model_predictions"
+
+        reply = QMessageBox.question(
+            self, "Save Results",
+            f"Write {len(df)} rows to table '{table_name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            self._dm.write_label_table(table_name, df)
+            self._populate_data_controls()
+            self._model_controls.set_status(f"Results saved to '{table_name}'")
+        except Exception as e:
+            _log.exception("Failed to save results")
+            QMessageBox.warning(self, "Save Failed", f"Failed to save: {e}")
 
     # ── Cleanup ──────────────────────────────────────────────────────────────
 

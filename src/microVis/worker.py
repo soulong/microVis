@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal
@@ -272,4 +273,172 @@ class CropWorker(QRunnable):
 
             self.signals.finished.emit(rgb, self._key)
         except Exception as e:
+            self.signals.error.emit(str(e))
+
+
+# -- Object Export Worker --
+
+
+class _ExportSignals(QObject):
+    progress = Signal(int, int)  # (current, total)
+    finished = Signal(dict)  # {"count": N, "save_dir": path}
+    error = Signal(str)
+
+
+class ObjectExportWorker(QRunnable):
+    """Background worker that exports cropped/masked objects to disk."""
+
+    def __init__(
+        self,
+        dm: Any,
+        wells: list[str],
+        fields: list[int],
+        stacks: list[int],
+        timepoints: list[int],
+        mask_name: str,
+        channel_names: list[str],
+        save_dir: str,
+        object_mode: str,
+        channel_mode: str,
+        annotations: dict | None = None,
+        gen: int = 0,
+    ):
+        super().__init__()
+        self.signals = _ExportSignals()
+        self.setAutoDelete(False)
+        self._dm = dm
+        self._wells = wells
+        self._fields = fields
+        self._stacks = stacks
+        self._tps = timepoints
+        self._mask_name = mask_name
+        self._channel_names = channel_names
+        self._save_dir = save_dir
+        self._object_mode = object_mode
+        self._channel_mode = channel_mode
+        self._annotations = annotations
+        self._gen = gen
+
+    def run(self) -> None:
+        try:
+            from pathlib import Path
+            import tifffile
+
+            save_path = Path(self._save_dir)
+            save_path.mkdir(parents=True, exist_ok=True)
+
+            rows = self._dm.lookup_row_indices(
+                self._wells, self._fields, self._stacks, self._tps
+            )
+            if not rows:
+                self.signals.finished.emit({"count": 0, "save_dir": self._save_dir})
+                return
+
+            # Build annotation lookup if needed
+            key_to_class = {}
+            if self._annotations and self._object_mode == "All annotated":
+                for cls_name, keys in self._annotations.items():
+                    for key in keys:
+                        lookup = (key.well, key.field, key.stack, key.tp, key.label)
+                        key_to_class[lookup] = cls_name
+
+            total = len(rows)
+            exported_count = 0
+            mask_col = f"mask_{self._mask_name}"
+            _log.info("Export starting: %d images, mask=%s, mode=%s, channel_mode=%s",
+                      total, mask_col, self._object_mode, self._channel_mode)
+
+            for img_idx, (row_idx, well, field, stack, tp) in enumerate(rows):
+                try:
+                    img_data, mask_dict = self._dm.get_imageset_with_masks(
+                        row_idx, channels=self._channel_names, masks=[mask_col]
+                    )
+                    _log.debug("Row %d: mask_dict keys=%s", row_idx, list(mask_dict.keys()))
+                    # Try with prefix first, then without
+                    mask = mask_dict.get(mask_col)
+                    if mask is None:
+                        mask = mask_dict.get(self._mask_name)
+                    if mask is None and mask_dict:
+                        # Fall back to first available mask
+                        mask = next(iter(mask_dict.values()))
+                    if mask is None:
+                        _log.debug("Row %d: no mask found, skipping", row_idx)
+                        continue
+
+                    # Find image name from metadata
+                    img_name = f"{well}_f{field}_z{stack}_t{tp}"
+
+                    # Get unique labels in this image
+                    unique_labels = np.unique(mask)
+                    unique_labels = unique_labels[unique_labels > 0]
+                    _log.info("Row %d (%s): mask shape=%s, dtype=%s, unique_labels=%d",
+                              row_idx, img_name, mask.shape, mask.dtype, len(unique_labels))
+
+                    for label_id in unique_labels:
+                        # Check if we should export this object
+                        lookup = (well, field, stack, tp, int(label_id))
+                        if self._object_mode == "All annotated":
+                            if lookup not in key_to_class:
+                                _log.debug("Skipping object %d (not in annotations)", label_id)
+                                continue
+
+                        # Extract object crop
+                        ys, xs = np.where(mask == label_id)
+                        if len(ys) == 0:
+                            continue
+
+                        y_min, y_max = int(ys.min()), int(ys.max())
+                        x_min, x_max = int(xs.min()), int(xs.max())
+
+                        # Add padding
+                        h, w = mask.shape
+                        pad = 4
+                        y_min_p = max(0, y_min - pad)
+                        y_max_p = min(h, y_max + pad + 1)
+                        x_min_p = max(0, x_min - pad)
+                        x_max_p = min(w, x_max + pad + 1)
+
+                        # Crop image (raw intensity values)
+                        crop_img = img_data[y_min_p:y_max_p, x_min_p:x_max_p, :]
+                        crop_mask = mask[y_min_p:y_max_p, x_min_p:x_max_p]
+
+                        # Apply mask (zero background, keep raw values for object)
+                        obj_mask = (crop_mask == label_id)
+                        for ch in range(crop_img.shape[2]):
+                            crop_img[:, :, ch] *= obj_mask
+
+                        # Save based on channel mode
+                        if self._channel_mode == "Single channel":
+                            # Save each channel separately
+                            for ch_idx, ch_name in enumerate(self._channel_names):
+                                if ch_idx >= crop_img.shape[2]:
+                                    break
+                                ch_data = crop_img[:, :, ch_idx]
+                                fname = f"{img_name}_{label_id}.tiff"
+                                # Add channel name to filename if multiple channels
+                                if len(self._channel_names) > 1:
+                                    fname = f"{img_name}_{label_id}_{ch_name}.tiff"
+                                tifffile.imwrite(str(save_path / fname), ch_data)
+                        else:
+                            # Save as multi-channel image (CYX format)
+                            # crop_img is (H, W, C) -> transpose to (C, H, W)
+                            multi_ch = np.moveaxis(crop_img, -1, 0)
+                            fname = f"{img_name}_{label_id}.tiff"
+                            tifffile.imwrite(str(save_path / fname), multi_ch)
+
+                        exported_count += 1
+
+                except Exception as e:
+                    _log.warning("Failed to export from row %d: %s", row_idx, e)
+
+                self.signals.progress.emit(img_idx + 1, total)
+
+            _log.info("Export complete: %d objects exported to %s", exported_count, self._save_dir)
+            self.signals.finished.emit({
+                "count": exported_count,
+                "save_dir": self._save_dir,
+            })
+
+        except Exception as e:
+            _log.exception("Object export failed")
             self.signals.error.emit(str(e))

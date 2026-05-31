@@ -152,6 +152,7 @@ class DataView(QWidget):
         self._radio_row.addWidget(self._tables_label)
         self._radio_group = QButtonGroup(self)
         self._radio_group.setExclusive(True)
+        self._radio_group.idClicked.connect(self._on_radio_clicked)
         self._radio_container = QWidget()
         self._radio_container.setLayout(self._radio_row)
         layout.addWidget(self._radio_container)
@@ -216,9 +217,6 @@ class DataView(QWidget):
         self._radio_row.addStretch()
         if names:
             self.table_radio_selected.emit(names[0])
-
-        # Connect group
-        self._radio_group.idClicked.connect(self._on_radio_clicked)
 
     def _on_radio_clicked(self, idx: int) -> None:
         btn = self._radio_group.button(idx)

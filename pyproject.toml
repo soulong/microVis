@@ -26,8 +26,14 @@ dependencies = [
     "openpyxl",
     "matplotlib",
     "scikit-image",
+    "scikit-learn",
     "pygwalker",
     "PySide6",
+    "torch",
+    "torchvision",
+    "timm",
+    "lightly",
+    "umap-learn",
 ]
 
 [project.urls]

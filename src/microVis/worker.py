@@ -55,7 +55,7 @@ class ImageWorkerConfig:
     field: int
     stack: int
     tp: int
-    raw_data: tuple
+    raw_data: tuple | None
     thumb_size: int
     channel_names: list[str]
     ch_config: dict
@@ -64,6 +64,9 @@ class ImageWorkerConfig:
     contrast_gamma: float
     invert: bool
     need_polygons: bool
+    dm: object | None = None
+    enhanced_cache: np.ndarray | None = None
+    skip_enhance: bool = False
     overlay_val: float | str | None = None
     overlay_col: str | None = None
     n_objects: int | None = None
@@ -97,30 +100,40 @@ class ImageWorker(QRunnable):
             from microVis.processing.overlay import extract_polygons
 
             cfg = self._cfg
-            img_data, mask_dict = cfg.raw_data
+
+            # Load from disk if not provided (runs on worker thread, not main)
+            loaded_from_disk = False
+            if cfg.raw_data is not None:
+                img_data, mask_dict = cfg.raw_data
+            else:
+                img_data, mask_dict = cfg.dm.get_imageset(cfg.row_idx)
+                loaded_from_disk = True
 
             # Downscale to thumbnail resolution
             img_small = _downscale_image(img_data, cfg.thumb_size)
             mask_name, mask_small = _downscale_mask(mask_dict, cfg.thumb_size)
 
-            # Per-channel contrast on small image
-            enhanced = np.zeros_like(img_small, dtype=np.float64)
-            for ch_idx, ch_name in enumerate(cfg.channel_names):
-                ch_cfg = cfg.ch_config.get(ch_name, {})
-                if not ch_cfg.get("enabled", True):
-                    enhanced[:, :, ch_idx] = img_small[:, :, ch_idx].astype(np.float64)
-                    continue
-                vmin = ch_cfg.get("vmin", 0)
-                vmax = ch_cfg.get("vmax", cfg.dmax)
-                band = img_small[:, :, ch_idx].astype(np.float64)
-                band = np.clip((band - vmin) / max(vmax - vmin, 1e-10), 0, 1)
-                if cfg.contrast_method == "gamma":
-                    band = apply_contrast(band, "gamma", gamma=cfg.contrast_gamma)
-                elif cfg.contrast_method == "histogram_equalization":
-                    band = apply_contrast(band, "histogram_equalization")
-                if cfg.invert:
-                    band = invert_image(band)
-                enhanced[:, :, ch_idx] = band
+            # Per-channel contrast — reuse cached enhanced data when possible
+            if cfg.skip_enhance and cfg.enhanced_cache is not None:
+                enhanced = cfg.enhanced_cache
+            else:
+                enhanced = np.zeros_like(img_small, dtype=np.float64)
+                for ch_idx, ch_name in enumerate(cfg.channel_names):
+                    ch_cfg = cfg.ch_config.get(ch_name, {})
+                    if not ch_cfg.get("enabled", True):
+                        enhanced[:, :, ch_idx] = img_small[:, :, ch_idx].astype(np.float64)
+                        continue
+                    vmin = ch_cfg.get("vmin", 0)
+                    vmax = ch_cfg.get("vmax", cfg.dmax)
+                    band = img_small[:, :, ch_idx].astype(np.float64)
+                    band = np.clip((band - vmin) / max(vmax - vmin, 1e-10), 0, 1)
+                    if cfg.contrast_method == "gamma":
+                        band = apply_contrast(band, "gamma", gamma=cfg.contrast_gamma)
+                    elif cfg.contrast_method == "histogram_equalization":
+                        band = apply_contrast(band, "histogram_equalization")
+                    if cfg.invert:
+                        band = invert_image(band)
+                    enhanced[:, :, ch_idx] = band
 
             # Composite
             comp_config = {ch: {**c, "vmin": 0, "vmax": 1}
@@ -147,7 +160,11 @@ class ImageWorker(QRunnable):
                 "gen": cfg.gen,
                 "thumb_size": cfg.thumb_size,
                 "sort_by_row": cfg.sort_by_row,
+                "enhanced": enhanced,
+                "row_idx": cfg.row_idx,
             }
+            if loaded_from_disk:
+                result["raw_data"] = (img_data, mask_dict)
             self.signals.finished.emit(result)
         except Exception as e:
             self.signals.error.emit(str(e))
@@ -382,6 +399,13 @@ class ObjectExportWorker(QRunnable):
                                 _log.debug("Skipping object %d (not in annotations)", label_id)
                                 continue
 
+                        # Determine save directory (class subfolder for annotated)
+                        obj_save_dir = save_path
+                        if self._object_mode == "All annotated" and lookup in key_to_class:
+                            class_name = key_to_class[lookup]
+                            obj_save_dir = save_path / class_name
+                            obj_save_dir.mkdir(parents=True, exist_ok=True)
+
                         # Extract object crop
                         ys, xs = np.where(mask == label_id)
                         if len(ys) == 0:
@@ -418,13 +442,13 @@ class ObjectExportWorker(QRunnable):
                                 # Add channel name to filename if multiple channels
                                 if len(self._channel_names) > 1:
                                     fname = f"{img_name}_{label_id}_{ch_name}.tiff"
-                                tifffile.imwrite(str(save_path / fname), ch_data)
+                                tifffile.imwrite(str(obj_save_dir / fname), ch_data)
                         else:
                             # Save as multi-channel image (CYX format)
                             # crop_img is (H, W, C) -> transpose to (C, H, W)
                             multi_ch = np.moveaxis(crop_img, -1, 0)
                             fname = f"{img_name}_{label_id}.tiff"
-                            tifffile.imwrite(str(save_path / fname), multi_ch)
+                            tifffile.imwrite(str(obj_save_dir / fname), multi_ch)
 
                         exported_count += 1
 

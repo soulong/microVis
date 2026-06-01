@@ -1,4 +1,5 @@
 """QApplication bootstrap for the microVis desktop GUI."""
+import os
 import sys
 from pathlib import Path
 
@@ -19,17 +20,21 @@ class _WheelBlocker(QObject):
     """
 
     def eventFilter(self, watched, event):
-        if event.type() != QEvent.Type.Wheel:
+        try:
+            if event.type() != QEvent.Type.Wheel:
+                return False
+            pos = event.globalPosition().toPoint()
+            w = QApplication.instance().widgetAt(pos)
+            for _ in range(4):
+                if w is None:
+                    break
+                if isinstance(w, (QAbstractSpinBox, QComboBox)) and not w.hasFocus():
+                    return True
+                w = w.parentWidget()
             return False
-        pos = event.globalPosition().toPoint()
-        w = QApplication.instance().widgetAt(pos)
-        for _ in range(4):
-            if w is None:
-                break
-            if isinstance(w, (QAbstractSpinBox, QComboBox)) and not w.hasFocus():
-                return True
-            w = w.parentWidget()
-        return False
+        except KeyboardInterrupt:
+            # Ctrl+C during event processing — force-exit to avoid GIL crash
+            os._exit(0)
 
 
 def run_app(dataset_dir: str | None = None) -> None:
@@ -38,7 +43,6 @@ def run_app(dataset_dir: str | None = None) -> None:
     Args:
         dataset_dir: Optional path to a measurement directory to load on startup.
     """
-    import os
     os.environ.setdefault("QT_LOGGING_RULES", "qt.gui.icc=false")
 
     setup_logging()

@@ -32,15 +32,19 @@ class DataModule:
         self._root_dir = Path(measurement_dir)
         self._image_dir: Path | None = None
         self._dataset: Any = None
+        self._db_path: Path | None = None
         self._db_conn: sqlite3.Connection | None = None
         self._db_tables: dict[str, dict[str, str]] = {}
         self._metadata: pd.DataFrame | None = None
         self._img_dtype_cache: str | None = None
         self._wells_cache: list[str] | None = None
+        self._df_cache: dict[str, pd.DataFrame] = {}
+        self._row_index: dict[tuple, list[int]] = {}
         self._ready = False
 
         self._init_dataset()
         self._init_db()
+        self._build_row_index()
         self._ready = True
 
     # ── Initialization ─────────────────────────────────────────────
@@ -58,12 +62,26 @@ class DataModule:
         _log.info("ImageDataset loaded: %d rows, channels=%s, masks=%s",
                    len(self._metadata), self.channels, self.mask_names)
 
+    def _build_row_index(self) -> None:
+        """Build a composite index mapping (well, field, stack, timepoint) → [row_idx]."""
+        meta = self._metadata
+        self._row_index = {}
+        for idx in meta.index:
+            key = (
+                meta.at[idx, "well"],
+                int(meta.at[idx, "field"]),
+                int(meta.at[idx, "stack"]),
+                int(meta.at[idx, "timepoint"]),
+            )
+            self._row_index.setdefault(key, []).append(int(idx))
+
     def _init_db(self):
         db_path = self._root_dir / "results.db"
         if not db_path.exists():
             _log.info("No results.db found — profiling unavailable")
             return
 
+        self._db_path = db_path
         self._db_conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._db_conn.execute("PRAGMA journal_mode=WAL")
         self._db_conn.row_factory = sqlite3.Row
@@ -132,7 +150,7 @@ class DataModule:
     # ── DB access ──────────────────────────────────────────────────
 
     def has_db(self) -> bool:
-        return self._db_conn is not None
+        return self._db_path is not None
 
     def get_profiling_tables(self) -> dict[str, list[str]]:
         result: dict[str, list[str]] = {}
@@ -154,13 +172,63 @@ class DataModule:
         return result
 
     def get_table_df(self, table: str) -> pd.DataFrame | None:
-        if self._db_conn is None:
+        if self._db_path is None:
             return None
+        if table in self._df_cache:
+            return self._df_cache[table]
+        # Open a temporary connection for this read
+        conn = self._db_conn
+        temp = conn is None
+        if temp:
+            conn = sqlite3.connect(str(self._db_path))
         try:
-            return pd.read_sql(f'SELECT * FROM "{table}"', self._db_conn)
+            df = pd.read_sql(f'SELECT * FROM "{table}"', conn)
+            self._df_cache[table] = df
+            return df
         except Exception as e:
             _log.warning("get_table_df(%s) failed: %s", table, e)
             return None
+        finally:
+            if temp:
+                conn.close()
+
+    def get_table_preview(self, table: str, limit: int = 20) -> tuple[pd.DataFrame | None, int]:
+        """Fetch first `limit` rows and total row count. Skips cache."""
+        if self._db_path is None:
+            return None, 0
+        conn = self._db_conn
+        temp = conn is None
+        if temp:
+            conn = sqlite3.connect(str(self._db_path))
+        try:
+            total = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            df = pd.read_sql(f'SELECT * FROM "{table}" LIMIT {limit}', conn)
+            return df, total
+        except Exception as e:
+            _log.warning("get_table_preview(%s) failed: %s", table, e)
+            return None, 0
+        finally:
+            if temp:
+                conn.close()
+
+    def write_merged_table(self, table_name: str, df: pd.DataFrame) -> None:
+        """Write a DataFrame to the DB. Opens connection, writes, closes."""
+        if self._db_path is None:
+            raise RuntimeError("No database available")
+        conn = sqlite3.connect(str(self._db_path))
+        try:
+            df.to_sql(table_name, conn, if_exists="replace", index=False)
+            cur = conn.execute(f'PRAGMA table_info("{table_name}")')
+            self._db_tables[table_name] = {row[1]: row[2] for row in cur.fetchall()}
+        finally:
+            conn.close()
+
+    def invalidate_table_cache(self, table: str | None = None) -> None:
+        """Clear cached DataFrames. If table is given, clear only that table."""
+        if table:
+            self._df_cache.pop(table, None)
+        else:
+            self._df_cache.clear()
 
     def aggregate(self, table: str, column: str, method: str) -> dict:
         df = self.get_table_df(table)
@@ -198,18 +266,26 @@ class DataModule:
     def write_label_table(self, table_name: str, df: pd.DataFrame) -> None:
         """Write label annotations to a table in results.db.
 
+        Opens a temporary connection, writes, and closes immediately.
+
         Args:
             table_name: Name of the table to write to.
             df: DataFrame with columns [well, field, stack, tp, label, class].
         """
-        if self._db_conn is None:
-            raise RuntimeError("No database connection available")
+        if self._db_path is None:
+            raise RuntimeError("No database available")
 
-        df.to_sql(table_name, self._db_conn, if_exists="replace", index=False)
+        conn = sqlite3.connect(str(self._db_path))
+        try:
+            df.to_sql(table_name, conn, if_exists="replace", index=False)
+            # Update the table schema cache
+            cur = conn.execute(f'PRAGMA table_info("{table_name}")')
+            self._db_tables[table_name] = {row[1]: row[2] for row in cur.fetchall()}
+        finally:
+            conn.close()
 
-        # Update the table schema cache
-        cur = self._db_conn.execute(f'PRAGMA table_info("{table_name}")')
-        self._db_tables[table_name] = {row[1]: row[2] for row in cur.fetchall()}
+        # Invalidate cached DataFrame for this table
+        self.invalidate_table_cache(table_name)
         _log.info("Wrote %d rows to table '%s'", len(df), table_name)
 
     # ── Image access ───────────────────────────────────────────────
@@ -219,25 +295,20 @@ class DataModule:
         stacks: list[int] | None = None,
         timepoints: list[int] | None = None,
     ) -> list[tuple[int, str, int, int, int]]:
-        meta = self._metadata
         if stacks is None:
             stacks = self.get_stacks()
         if timepoints is None:
             timepoints = self.get_timepoints()
         results: list[tuple[int, str, int, int, int]] = []
+        idx = self._row_index
         for well in wells:
             for field in fields:
                 for stack in stacks:
                     for timepoint in timepoints:
-                        mask = (
-                            (meta["well"] == well)
-                            & (meta["field"] == field)
-                            & (meta["stack"] == stack)
-                            & (meta["timepoint"] == timepoint)
-                        )
-                        matching = meta[mask]
-                        for idx in matching.index:
-                            results.append((int(idx), well, field, stack, timepoint))
+                        row_idxs = idx.get((well, field, stack, timepoint))
+                        if row_idxs:
+                            for row_idx in row_idxs:
+                                results.append((row_idx, well, field, stack, timepoint))
         return results
 
     def get_imageset(self, row_idx: int) -> tuple[np.ndarray, dict[str, np.ndarray]]:
@@ -250,6 +321,13 @@ class DataModule:
         return self._dataset.get_imageset(row_idx, channels=channels, masks=masks)
 
     # ── Cleanup ────────────────────────────────────────────────────
+
+    def close_db_only(self) -> None:
+        """Close the persistent DB connection. Cached data remains available."""
+        if self._db_conn is not None:
+            self._db_conn.close()
+            self._db_conn = None
+            _log.info("DB connection closed (cache retained)")
 
     def close(self) -> None:
         """Close the SQLite connection."""

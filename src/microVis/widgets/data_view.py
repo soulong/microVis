@@ -178,6 +178,12 @@ class DataView(QWidget):
         )
         layout.addWidget(self._table_view, 1)
 
+        # ── Row 5: Preview hint ──
+        self._preview_hint = QLabel("")
+        self._preview_hint.setStyleSheet("color: #777777; font-size: 8pt;")
+        self._preview_hint.setVisible(False)
+        layout.addWidget(self._preview_hint)
+
     # ── Public methods ─────────────────────────────────────────────────────
 
     def set_dataset_label(self, text: str) -> None:
@@ -232,6 +238,15 @@ class DataView(QWidget):
 
     def clear_table(self) -> None:
         self._model.setDataFrame(pd.DataFrame())
+        self._preview_hint.setVisible(False)
+
+    def set_preview_hint(self, total_rows: int | None) -> None:
+        """Show/hide the preview hint label."""
+        if total_rows is not None and total_rows > 20:
+            self._preview_hint.setText(f"Showing top 20 rows (of {total_rows} total)")
+            self._preview_hint.setVisible(True)
+        else:
+            self._preview_hint.setVisible(False)
 
     def set_pygwalker_buttons(self, has_tables: bool) -> None:
         self._btn_pgw_open.setEnabled(has_tables)

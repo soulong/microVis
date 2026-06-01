@@ -18,22 +18,15 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
-keywords = ["microscopy", "image-visualization", "data-plot", "data-modeling"]
+keywords = ["microscopy", "image-visualization", "data-plot"]
 dependencies = [
     "natsort",
     "numpy",
     "pandas",
     "openpyxl",
     "matplotlib",
-    "scikit-image",
-    "scikit-learn",
     "pygwalker",
     "PySide6",
-    "torch",
-    "torchvision",
-    "timm",
-    "lightly",
-    "umap-learn",
 ]
 
 [project.urls]

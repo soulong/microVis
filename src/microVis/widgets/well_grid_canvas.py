@@ -4,6 +4,7 @@ import matplotlib
 
 matplotlib.use("QtAgg")
 
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.cm import ScalarMappable
@@ -62,6 +63,13 @@ class WellGridCanvas(QWidget):
         self._n_rows: int = 0
         self._n_cols: int = 0
 
+        # Incremental redraw state
+        self._scatter = None
+        self._annotations: list = []
+        self._sel_scatter = None
+        self._prev_dims: tuple[int, int] = (0, 0)
+        self._prev_fmt: str = ""
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._canvas)
@@ -78,27 +86,27 @@ class WellGridCanvas(QWidget):
         selected_wells: set[str],
         metadata_map: dict[str, float | str] | None = None,
     ) -> None:
-        """Redraw the well grid with current parameters."""
-        self._axes.clear()
-        self._axes.set_facecolor("#252536")
-        # Clear the colorbar axes and hide it until we know we need it.
-        self._cbar_ax.clear()
-        self._cbar_ax.set_visible(False)
-        self._well_indices.clear()
-
+        """Redraw the well grid. Uses incremental update when dimensions are unchanged."""
         rows, cols = dm.get_plate_dims()
         fmt_rows, fmt_cols = _get_format_dims(fmt_name)
         rows = max(rows, fmt_rows)
         cols = max(cols, fmt_cols)
 
         row_labels = _row_labels(rows)
-        self._row_labels = row_labels
-        self._n_rows = rows
-        self._n_cols = cols
         all_wells = dm.get_wells()
         well_set = set(all_wells)
 
-        # Compute data mapping via DataModule.aggregate()
+        # Build well indices
+        self._well_indices.clear()
+        for r in range(rows):
+            for c in range(cols):
+                self._well_indices[f"{row_labels[r]}{c + 1}"] = r * cols + c
+
+        self._row_labels = row_labels
+        self._n_rows = rows
+        self._n_cols = cols
+
+        # Compute data mapping
         data_map: dict[str, float | str] = {}
         is_numeric = False
         self._col_name = None
@@ -115,8 +123,6 @@ class WellGridCanvas(QWidget):
         self._data_map = data_map
 
         marker_size = _compute_marker_size(rows, cols)
-        x_vals, y_vals, color_list = [], [], []
-
         has_data = bool(data_map)
         cmap_obj = None
         norm = None
@@ -141,12 +147,13 @@ class WellGridCanvas(QWidget):
                 for i, cat in enumerate(unique_cats)
             }
 
+        # Build color/position arrays
+        x_vals, y_vals, color_list = [], [], []
         for r in range(rows):
             for c in range(cols):
                 well = f"{row_labels[r]}{c + 1}"
                 x_vals.append(c + 1)
                 y_vals.append(r + 1)
-
                 if has_data and well in data_map:
                     val = data_map[well]
                     if is_numeric and isinstance(val, (int, float)):
@@ -160,68 +167,91 @@ class WellGridCanvas(QWidget):
                 else:
                     color_list.append("#1a1a2a")
 
-        self._axes.scatter(
-            x_vals, y_vals,
-            s=marker_size,
-            c=color_list,
-            edgecolors="#555555",
-            linewidths=0.5,
-            picker=True,
-            pickradius=5,
-            zorder=2,
-        )
+        offsets = np.column_stack([x_vals, y_vals])
+        dims_key = (rows, cols, fmt_name)
+        need_full_redraw = dims_key != (self._prev_dims[0], self._prev_dims[1], self._prev_fmt)
 
-        for i in range(len(x_vals)):
-            well_at_pos = f"{row_labels[i // cols]}{(i % cols) + 1}"
-            self._well_indices[well_at_pos] = i
+        if need_full_redraw:
+            # Full redraw: clear axes and rebuild everything
+            self._axes.clear()
+            self._axes.set_facecolor("#252536")
+            self._cbar_ax.clear()
+            self._cbar_ax.set_visible(False)
+            self._annotations.clear()
+            self._sel_scatter = None
 
-        for i in range(len(x_vals)):
-            well_at_pos = f"{row_labels[i // cols]}{(i % cols) + 1}"
-            if well_at_pos in well_set:
-                self._axes.annotate(
-                    well_at_pos, (x_vals[i], y_vals[i]),
-                    fontsize=5, color="#aaaaaa", ha="center", va="center", zorder=3,
-                )
+            self._scatter = self._axes.scatter(
+                x_vals, y_vals,
+                s=marker_size,
+                c=color_list,
+                edgecolors="#555555",
+                linewidths=0.5,
+                picker=True,
+                pickradius=5,
+                zorder=2,
+            )
 
+            for well, i in self._well_indices.items():
+                if well in well_set:
+                    txt = self._axes.annotate(
+                        well, (x_vals[i], y_vals[i]),
+                        fontsize=5, color="#aaaaaa", ha="center", va="center", zorder=3,
+                    )
+                    self._annotations.append(txt)
+
+            self._axes.set_xlim(0.5, cols + 0.5)
+            self._axes.set_ylim(0.5, rows + 0.5)
+            self._axes.set_xticks(range(1, cols + 1))
+            self._axes.set_xticklabels([str(c) for c in range(1, cols + 1)])
+            self._axes.set_yticks(range(1, rows + 1))
+            self._axes.set_yticklabels(row_labels)
+            self._axes.tick_params(colors="#888888", labelsize=7)
+            self._axes.invert_yaxis()
+            self._axes.xaxis.set_ticks_position('top')
+            self._axes.xaxis.set_label_position('top')
+            for spine in self._axes.spines.values():
+                spine.set_color("#333333")
+        else:
+            # Incremental update: update scatter data in-place
+            self._scatter.set_offsets(offsets)
+            self._scatter.set_facecolors(color_list)
+            self._scatter.set_sizes(np.full(len(x_vals), marker_size))
+            # Remove old selection ring
+            if self._sel_scatter is not None:
+                self._sel_scatter.remove()
+                self._sel_scatter = None
+
+        # Draw selection ring (on both paths)
+        sel_x, sel_y = [], []
         for well in selected_wells:
             if well in well_set and well in self._well_indices:
                 idx = self._well_indices[well]
-                self._axes.scatter(
-                    [x_vals[idx]], [y_vals[idx]],
-                    s=marker_size * 1.3,
-                    facecolors="none",
-                    edgecolors="#5a8a9a",
-                    linewidths=2,
-                    zorder=4,
-                )
+                sel_x.append(x_vals[idx])
+                sel_y.append(y_vals[idx])
+        if sel_x:
+            self._sel_scatter = self._axes.scatter(
+                sel_x, sel_y,
+                s=marker_size * 1.3,
+                facecolors="none",
+                edgecolors="#5a8a9a",
+                linewidths=2,
+                zorder=4,
+            )
 
-        self._axes.set_xlim(0.5, cols + 0.5)
-        self._axes.set_ylim(0.5, rows + 0.5)
-        self._axes.set_xticks(range(1, cols + 1))
-        self._axes.set_xticklabels([str(c) for c in range(1, cols + 1)])
-        self._axes.set_yticks(range(1, rows + 1))
-        self._axes.set_yticklabels(row_labels)
-        self._axes.tick_params(colors="#888888", labelsize=7)
-        self._axes.invert_yaxis()
-        self._axes.xaxis.set_ticks_position('top')
-        self._axes.xaxis.set_label_position('top')
-        for spine in self._axes.spines.values():
-            spine.set_color("#333333")
-
+        # Colorbar
+        self._cbar_ax.clear()
+        self._cbar_ax.set_visible(False)
         if has_data and is_numeric and len(color_list) > 0:
             sm = ScalarMappable(cmap=cmap_obj, norm=norm)
             sm.set_array([])
-            # Use cax= to draw into the pre-allocated colorbar axes.
-            # This is the key fix: figure.colorbar(ax=self._axes, …) internally
-            # calls ax.set_position() to shrink the main axes and make room —
-            # that shrinkage accumulates across redraws, causing the grid to
-            # drift left and compress.  With cax= the main axes is never touched.
             self._figure.colorbar(sm, cax=self._cbar_ax)
             self._cbar_ax.set_visible(True)
             self._cbar_ax.tick_params(colors="#888888", labelsize=7)
             for spine in self._cbar_ax.spines.values():
                 spine.set_color("#333333")
 
+        self._prev_dims = (rows, cols)
+        self._prev_fmt = fmt_name
         self._canvas.draw()
 
     def _on_pick(self, event) -> None:

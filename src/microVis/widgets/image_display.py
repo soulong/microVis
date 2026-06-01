@@ -223,6 +223,14 @@ class _ThumbnailView(QGraphicsView):
         self._drag_start_pos = None
         drag.exec(Qt.CopyAction)
 
+    def set_pixmap(self, rgb: np.ndarray, polygons: list | None = None,
+                   overlay_alpha: float = 0.4, overlay_cmap: str = "Viridis") -> None:
+        """Update the displayed image in-place, preserving zoom/pan state."""
+        pixmap = _array_to_qpixmap(rgb)
+        if polygons:
+            pixmap = _draw_polygon_overlays(pixmap, polygons, overlay_alpha, overlay_cmap)
+        self._pixmap_item.setPixmap(pixmap)
+
     def reset_zoom(self) -> None:
         self.resetTransform()
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
@@ -441,6 +449,26 @@ class ImageDisplay(QScrollArea):
         self._rebuild_display(thumb_size, overlay_alpha, overlay_cmap,
                               saved_state, sort_by_row)
         return True
+
+    def update_pixmaps_in_place(self, results: list[dict], overlay_alpha: float,
+                                overlay_cmap: str) -> None:
+        """Update existing thumbnail pixmaps without rebuilding the layout."""
+        # Build lookup: (well, field, stack, tp) → result
+        result_map = {}
+        for r in results:
+            key = (r["well"], r["field"], r["stack"], r["tp"])
+            result_map[key] = r
+
+        for row_widget, _row_layout in self._row_widgets.values():
+            for thumb in row_widget.findChildren(_ThumbnailView):
+                key = (thumb._well, thumb._field, thumb._stack, thumb._tp)
+                r = result_map.get(key)
+                if r is not None:
+                    thumb.set_pixmap(r["rgb"], r.get("polygons"),
+                                     overlay_alpha, overlay_cmap)
+
+        # Update results cache
+        self._results_cache = list(results)
 
     def _insert_row_sorted(self, group_key, row_widget):
         """Insert row widget at the correct sorted position in the layout."""

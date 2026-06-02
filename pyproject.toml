@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "microVis"
+name = "microVis-python"
 dynamic = ["version"]
 description = "Interactive desktop GUI for visualizing microProfiler microscopy datasets"
 readme = "README.md"

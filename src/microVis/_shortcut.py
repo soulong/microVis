@@ -73,8 +73,8 @@ def _desktop() -> Path:
     """Return the user's Desktop directory."""
     return Path.home() / "Desktop"
     
-def _startup_menu() -> Path:
-    """Return the user's Startup directory"""
+def _start_menu_programs() -> Path:
+    """Return the user's Start Menu Programs directory."""
     return Path.home() / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs"
 
 def _create_with_pywin32(
@@ -167,7 +167,7 @@ def create_shortcut() -> None:
 
     work_dir = str(Path.home())
 
-    link_dirs = [_startup_menu(), _desktop()]
+    link_dirs = [_start_menu_programs(), _desktop()]
     for link_path in [d / "microVis.lnk" for d in link_dirs]:
         ok = _create_with_pywin32(link_path, target, args, icon_str, work_dir)
         if not ok:

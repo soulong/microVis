@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import matplotlib
-
-matplotlib.use("QtAgg")
-
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg

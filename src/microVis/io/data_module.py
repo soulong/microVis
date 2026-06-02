@@ -12,6 +12,14 @@ from microVis.log_utils import get_logger
 
 _log = get_logger("microVis.data_module")
 
+_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_table_name(name: str) -> None:
+    """Raise ValueError if *name* is not a safe SQL table identifier."""
+    if not _TABLE_NAME_RE.match(name):
+        raise ValueError(f"Unsafe table name: {name!r}")
+
 
 def _infer_plate_dims(wells: list[str]) -> tuple[int, int]:
     """Infer plate dimensions from well names (e.g. B2, D2 → 4 rows, 2 cols)."""
@@ -172,6 +180,7 @@ class DataModule:
         return result
 
     def get_table_df(self, table: str) -> pd.DataFrame | None:
+        _validate_table_name(table)
         if self._db_path is None:
             return None
         if table in self._df_cache:
@@ -194,6 +203,7 @@ class DataModule:
 
     def get_table_preview(self, table: str, limit: int = 20) -> tuple[pd.DataFrame | None, int]:
         """Fetch first `limit` rows and total row count. Skips cache."""
+        _validate_table_name(table)
         if self._db_path is None:
             return None, 0
         conn = self._db_conn
@@ -213,6 +223,7 @@ class DataModule:
 
     def write_merged_table(self, table_name: str, df: pd.DataFrame) -> None:
         """Write a DataFrame to the DB. Opens connection, writes, closes."""
+        _validate_table_name(table_name)
         if self._db_path is None:
             raise RuntimeError("No database available")
         conn = sqlite3.connect(str(self._db_path))
@@ -231,6 +242,7 @@ class DataModule:
             self._df_cache.clear()
 
     def aggregate(self, table: str, column: str, method: str) -> dict:
+        _validate_table_name(table)
         df = self.get_table_df(table)
         if df is None:
             _log.warning("aggregate: get_table_df(%s) returned None", table)
@@ -272,6 +284,7 @@ class DataModule:
             table_name: Name of the table to write to.
             df: DataFrame with columns [well, field, stack, tp, label, class].
         """
+        _validate_table_name(table_name)
         if self._db_path is None:
             raise RuntimeError("No database available")
 

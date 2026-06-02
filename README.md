@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/github/license/soulong/microVis)](LICENSE)
 
-Interactive desktop GUI for visualizing microProfiler microscopy datasets — plate grids, multi-channel images, and profiling data.
+Interactive desktop GUI for visualizing microProfiler microscopy datasets — plate grids, multi-channel images, object annotation, and profiling data.
 
 ## Requirements
 
@@ -60,13 +60,37 @@ Composite multi-channel microscopy images with per-channel controls:
 - Adjust vmin/vmax per channel or use auto-range (percentile-based, per-channel)
 - Apply contrast transforms: gamma correction, histogram equalization, invert
 
+### Full-Resolution Zoom
+
+Ctrl + scroll on any thumbnail to zoom past native resolution. The app loads and composites the full-resolution image in the background and cross-fades it in when ready. Double-click to reset zoom. Middle-click drag to pan.
+
 ### Object Overlay
 
 Overlay segmentation masks and per-object profiling data onto images:
 
-- Boundary contour visualization with color-coded fills
-- Per-object tooltips showing label ID and profiling values
+- Boundary contour visualization with deterministic per-label color-coded fills
+- Per-object tooltips showing label ID and profiling values on hover
 - Configurable colormap and alpha
+
+### Object Annotation
+
+Drag-and-drop class labeling of segmented objects:
+
+1. Create class names in the sidebar (e.g. "cell", "debris")
+2. Drag objects directly from image thumbnails into class boxes
+3. Objects are cropped and displayed as thumbnails inside each class box
+4. Drag objects between class boxes to reclassify
+5. Click an object thumbnail to remove it
+6. Write all annotations to `results.db` as a new table
+
+### Object Export
+
+Export cropped/masked objects to TIFF files with fine-grained control:
+
+- **Object range**: export from currently displayed images, all images, or only annotated objects
+- **Channel mode**: single-channel (one YX file per channel) or multi-channel (one CYX file per object)
+- **Max objects per image**: randomly sample up to N objects per image (0 = no limit). In single-channel mode the file count is N × number of channels per image; in multi-channel mode it is N per image
+- Annotated objects are exported into per-class subfolders
 
 ### Metadata Integration
 
@@ -78,6 +102,7 @@ Browse profiling tables from `results.db` with:
 
 - Sortable columns (natural sort for numeric values)
 - Radio-button table selector
+- Preview mode (top 20 rows) with total row count hint
 - PyGwalker integration for interactive data exploration
 
 ### Pixel Inspector

@@ -25,10 +25,24 @@ from PySide6.QtWidgets import (
 _MIME_TYPE = "application/x-microvis-object"
 
 
+class _PassThroughPixmapItem(QGraphicsPixmapItem):
+    """QGraphicsPixmapItem that ignores all mouse events, letting them fall through."""
+
+    def mousePressEvent(self, event):
+        event.ignore()
+
+    def mouseReleaseEvent(self, event):
+        event.ignore()
+
+    def mouseMoveEvent(self, event):
+        event.ignore()
+
+
 class _ThumbnailView(QGraphicsView):
     """Single image thumbnail with optional overlay polygons."""
 
-    pixel_clicked = Signal(str, int, int, int, int, int)  # well, field, stack, tp, x, y
+    pixel_clicked = Signal(str, int, int, int, int, int, int, int)  # well, field, stack, tp, x, y, pixmap_w, pixmap_h
+    full_res_requested = Signal(str, int, int, int, int)  # well, field, stack, tp, gen
 
     def __init__(
         self,
@@ -46,6 +60,7 @@ class _ThumbnailView(QGraphicsView):
         mask: np.ndarray | None = None,
         obj_values: dict | None = None,
         thumb_size: int = 210,
+        row_idx: int = -1,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -53,16 +68,25 @@ class _ThumbnailView(QGraphicsView):
         self._field = field
         self._stack = stack
         self._tp = tp
+        self._row_idx = row_idx
         self._mask = mask
+        self._thumb_mask = mask  # saved for restore on zoom-out
         self._obj_values = obj_values or {}
         self._overlay_col = overlay_col
+        self._is_full_res = False
+        self._full_res_item = None
+        self._fade_timer = None
+        self._full_res_gen = 0  # generation counter to reject stale results
 
         # Create QPixmap from numpy RGB
+        self._base_rgb = rgb.copy()
         pixmap = _array_to_qpixmap(rgb)
 
         # Draw overlay polygons
         if polygons:
             pixmap = _draw_polygon_overlays(pixmap, polygons, overlay_alpha, overlay_cmap)
+
+        self._thumb_pixmap = pixmap
 
         self._scene = QGraphicsScene(self)
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
@@ -101,6 +125,15 @@ class _ThumbnailView(QGraphicsView):
             factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
             self.scale(factor, factor)
             event.accept()
+            # Load full-res when zoomed past native resolution
+            zoom = self.transform().m11()
+            if zoom > 1.0 and not self._is_full_res:
+                self._is_full_res = True
+                self._full_res_gen += 1
+                self.full_res_requested.emit(self._well, self._field, self._stack, self._tp, self._full_res_gen)
+            elif zoom <= 1.0 and self._is_full_res:
+                self._is_full_res = False
+                self.remove_full_res()
         else:
             super().wheelEvent(event)
 
@@ -182,10 +215,12 @@ class _ThumbnailView(QGraphicsView):
                 scene_pos = self.mapToScene(event.pos())
                 x = int(scene_pos.x())
                 y = int(scene_pos.y())
-                h = self._pixmap_item.pixmap().height()
-                w = self._pixmap_item.pixmap().width()
-                if 0 <= x < w and 0 <= y < h:
-                    self.pixel_clicked.emit(self._well, self._field, self._stack, self._tp, x, y)
+                # Scene coords are always in thumbnail pixel space (both zoomed and not).
+                # Use thumbnail pixmap for bounds check and coordinate conversion.
+                pw = self._pixmap_item.pixmap().width()
+                ph = self._pixmap_item.pixmap().height()
+                if 0 <= x < pw and 0 <= y < ph:
+                    self.pixel_clicked.emit(self._well, self._field, self._stack, self._tp, x, y, pw, ph)
             self._drag_start_pos = None
             super().mouseReleaseEvent(event)
         else:
@@ -226,12 +261,102 @@ class _ThumbnailView(QGraphicsView):
     def set_pixmap(self, rgb: np.ndarray, polygons: list | None = None,
                    overlay_alpha: float = 0.4, overlay_cmap: str = "Viridis") -> None:
         """Update the displayed image in-place, preserving zoom/pan state."""
+        self._base_rgb = rgb.copy()
         pixmap = _array_to_qpixmap(rgb)
         if polygons:
             pixmap = _draw_polygon_overlays(pixmap, polygons, overlay_alpha, overlay_cmap)
-        self._pixmap_item.setPixmap(pixmap)
+        self._thumb_pixmap = pixmap
+        if not self._is_full_res:
+            self._pixmap_item.setPixmap(pixmap)
+
+    def render_overlay(self, overlay_alpha: float, overlay_cmap: str,
+                       polygons: list | None = None) -> None:
+        """Re-render overlay with new styling, using cached base RGB."""
+        pixmap = _array_to_qpixmap(self._base_rgb)
+        if polygons:
+            pixmap = _draw_polygon_overlays(pixmap, polygons, overlay_alpha, overlay_cmap)
+        self._thumb_pixmap = pixmap
+        if not self._is_full_res:
+            self._pixmap_item.setPixmap(pixmap)
+
+    def set_full_res_pixmap(self, pixmap: QPixmap, gen: int = 0,
+                            mask: np.ndarray | None = None,
+                            obj_values: dict | None = None,
+                            overlay_col: str = "") -> None:
+        """Cross-fade from thumbnail to full-resolution pixmap."""
+        from PySide6.QtCore import QTimer
+        # Reject stale results (gen=0 means always accept)
+        if gen != 0 and gen != self._full_res_gen:
+            return
+        # Update mask and overlay data for hover/drag interactivity
+        if mask is not None:
+            # Downscale full-res mask to thumbnail coordinate space for correct hover lookup
+            thumb_w = self._thumb_pixmap.width()
+            thumb_h = self._thumb_pixmap.height()
+            h, w = mask.shape
+            if h <= thumb_h and w <= thumb_w:
+                self._mask = mask
+            else:
+                from skimage.transform import resize as sk_resize
+                scale = min(thumb_h / h, thumb_w / w)
+                self._mask = sk_resize(
+                    mask, (int(h * scale), int(w * scale)),
+                    order=0, preserve_range=True, anti_aliasing=False,
+                ).astype(mask.dtype)
+        if obj_values is not None:
+            self._obj_values = obj_values
+        if overlay_col:
+            self._overlay_col = overlay_col
+        # Remove previous full-res item if any
+        if self._full_res_item is not None:
+            self._scene.removeItem(self._full_res_item)
+
+        # Scale full-res to match thumbnail's scene coordinates
+        thumb_w = self._thumb_pixmap.width()
+        thumb_h = self._thumb_pixmap.height()
+        full_w = pixmap.width()
+        full_h = pixmap.height()
+
+        self._full_res_item = _PassThroughPixmapItem(pixmap)
+        self._full_res_item.setZValue(1)
+        self._full_res_item.setOpacity(0.0)
+        # Scale so full-res pixels align with thumbnail coordinate space
+        if full_w > 0 and full_h > 0:
+            self._full_res_item.setScale(min(thumb_w / full_w, thumb_h / full_h))
+        self._scene.addItem(self._full_res_item)
+
+        # Fade in with QTimer
+        steps = 5
+        interval = 30  # ms per step → 150ms total
+        self._fade_step = 0
+        self._fade_steps = steps
+
+        def _tick():
+            self._fade_step += 1
+            if self._full_res_item is not None:
+                self._full_res_item.setOpacity(self._fade_step / self._fade_steps)
+            if self._fade_step >= self._fade_steps:
+                self._fade_timer.stop()
+
+        self._fade_timer = QTimer(self)
+        self._fade_timer.timeout.connect(_tick)
+        self._fade_timer.start(interval)
+
+    def remove_full_res(self) -> None:
+        """Remove full-res overlay, restoring thumbnail view."""
+        if self._fade_timer is not None:
+            self._fade_timer.stop()
+            self._fade_timer = None
+        if self._full_res_item is not None:
+            self._scene.removeItem(self._full_res_item)
+            self._full_res_item = None
+        # Restore original downscaled mask for hover/drag
+        self._mask = self._thumb_mask
 
     def reset_zoom(self) -> None:
+        self._is_full_res = False
+        self.remove_full_res()
+        self._pixmap_item.setPixmap(self._thumb_pixmap)
         self.resetTransform()
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
 
@@ -251,7 +376,8 @@ class _ThumbnailView(QGraphicsView):
 class ImageDisplay(QScrollArea):
     """Scrollable area displaying image thumbnails grouped by well."""
 
-    pixel_clicked = Signal(str, int, int, int, int, int)  # well, field, stack, tp, x, y
+    pixel_clicked = Signal(str, int, int, int, int, int, int, int)  # well, field, stack, tp, x, y, pixmap_w, pixmap_h
+    full_res_requested = Signal(str, int, int, int, int)  # well, field, stack, tp, gen
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -451,7 +577,8 @@ class ImageDisplay(QScrollArea):
         return True
 
     def update_pixmaps_in_place(self, results: list[dict], overlay_alpha: float,
-                                overlay_cmap: str) -> None:
+                                overlay_cmap: str,
+                                remove_full_res: bool = True) -> None:
         """Update existing thumbnail pixmaps without rebuilding the layout."""
         # Build lookup: (well, field, stack, tp) → result
         result_map = {}
@@ -466,9 +593,22 @@ class ImageDisplay(QScrollArea):
                 if r is not None:
                     thumb.set_pixmap(r["rgb"], r.get("polygons"),
                                      overlay_alpha, overlay_cmap)
+                    if remove_full_res:
+                        thumb.remove_full_res()
 
-        # Update results cache
-        self._results_cache = list(results)
+        # Merge into results cache (don't replace — keep all cached results)
+        for i, cached in enumerate(self._results_cache):
+            key = (cached["well"], cached["field"], cached["stack"], cached["tp"])
+            if key in result_map:
+                self._results_cache[i] = result_map[key]
+
+    def restyle_overlay(self, overlay_alpha: float, overlay_cmap: str,
+                        polygon_cache: dict) -> None:
+        """Re-render overlay polygons with new styling, no worker dispatch."""
+        for row_widget, _row_layout in self._row_widgets.values():
+            for thumb in row_widget.findChildren(_ThumbnailView):
+                polygons = polygon_cache.get(thumb._row_idx)
+                thumb.render_overlay(overlay_alpha, overlay_cmap, polygons)
 
     def _insert_row_sorted(self, group_key, row_widget):
         """Insert row widget at the correct sorted position in the layout."""
@@ -540,9 +680,10 @@ class ImageDisplay(QScrollArea):
             r.get("polygons"), overlay_alpha, overlay_cmap,
             r.get("overlay_val"), r.get("overlay_col"),
             r.get("n_objects"), r.get("mask"), r.get("obj_values"),
-            thumb_size,
+            thumb_size, row_idx=r.get("row_idx", -1),
         )
         thumb.pixel_clicked.connect(self.pixel_clicked)
+        thumb.full_res_requested.connect(self.full_res_requested)
         if saved_state:
             key = (r["well"], r["field"], r["stack"], r["tp"])
             if key in saved_state:
@@ -592,8 +733,10 @@ class ImageDisplay(QScrollArea):
             r.get("mask"),
             r.get("obj_values"),
             thumb_size,
+            row_idx=r.get("row_idx", -1),
         )
         thumb.pixel_clicked.connect(self.pixel_clicked)
+        thumb.full_res_requested.connect(self.full_res_requested)
         if saved_state:
             key = (r["well"], r["field"], r["stack"], r["tp"])
             if key in saved_state:
@@ -648,10 +791,10 @@ def _draw_polygon_overlays(
     painter.setRenderHint(QPainter.Antialiasing)
 
     cmap = plt.colormaps[cmap_name]
-    rng = np.random.RandomState(42)
     gold_pen = QPen(QColor(0xFF, 0xD7, 0x00), 1.0)
+    _PHI = 0.618033988749895  # golden-ratio conjugate for deterministic hashing
 
-    for _label_val, contour in polygons:
+    for label_val, contour in polygons:
         if len(contour) < 3:
             continue
 
@@ -661,8 +804,8 @@ def _draw_polygon_overlays(
             path.lineTo(pt[1], pt[0])
         path.closeSubpath()
 
-        # Random color per object
-        rgba = cmap(rng.uniform(0, 1))
+        # Deterministic color per label (golden-ratio hash)
+        rgba = cmap((label_val * _PHI) % 1.0)
         fill_color = QColor.fromRgbF(rgba[0], rgba[1], rgba[2], alpha)
 
         painter.fillPath(path, fill_color)

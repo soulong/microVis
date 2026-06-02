@@ -46,6 +46,44 @@ def _downscale_mask(mask_dict: dict, thumb_size: int) -> tuple:
     return name, small
 
 
+def _enhance_channels(
+    img_data: np.ndarray,
+    channel_names: list[str],
+    ch_config: dict,
+    dmax: float,
+    contrast_method: str,
+    contrast_gamma: float,
+    invert: bool,
+) -> np.ndarray:
+    """Apply per-channel contrast enhancement to an (H, W, C) image.
+
+    Returns a float64 array in [0, 1].
+    """
+    from microVis.processing.contrast import apply_contrast, invert_image
+
+    enhanced = np.zeros_like(img_data, dtype=np.float64)
+    n_channels = img_data.shape[2]
+    for ch_idx, ch_name in enumerate(channel_names):
+        if ch_idx >= n_channels:
+            break
+        ch_cfg = ch_config.get(ch_name, {})
+        if not ch_cfg.get("enabled", True):
+            enhanced[:, :, ch_idx] = 0.0
+            continue
+        vmin = ch_cfg.get("vmin", 0)
+        vmax = ch_cfg.get("vmax", dmax)
+        band = img_data[:, :, ch_idx].astype(np.float64)
+        band = np.clip((band - vmin) / max(vmax - vmin, 1e-10), 0, 1)
+        if contrast_method == "gamma":
+            band = apply_contrast(band, "gamma", gamma=contrast_gamma)
+        elif contrast_method == "histogram_equalization":
+            band = apply_contrast(band, "histogram_equalization")
+        if invert:
+            band = invert_image(band)
+        enhanced[:, :, ch_idx] = band
+    return enhanced
+
+
 @dataclass
 class ImageWorkerConfig:
     """Configuration for a single image processing worker."""
@@ -65,14 +103,14 @@ class ImageWorkerConfig:
     invert: bool
     need_polygons: bool
     dm: object | None = None
-    enhanced_cache: np.ndarray | None = None
-    skip_enhance: bool = False
     overlay_val: float | str | None = None
     overlay_col: str | None = None
     n_objects: int | None = None
     obj_values: dict = field(default_factory=dict)
     gen: int = 0
     sort_by_row: bool = False
+    mask_cache: np.ndarray | None = None
+    polygons_cache: list | None = None
 
 
 class _WorkerSignals(QObject):
@@ -96,7 +134,6 @@ class ImageWorker(QRunnable):
     def run(self) -> None:
         try:
             from microVis.processing.compositing import composite_image
-            from microVis.processing.contrast import apply_contrast, invert_image
             from microVis.processing.overlay import extract_polygons
 
             cfg = self._cfg
@@ -111,41 +148,30 @@ class ImageWorker(QRunnable):
 
             # Downscale to thumbnail resolution
             img_small = _downscale_image(img_data, cfg.thumb_size)
-            mask_name, mask_small = _downscale_mask(mask_dict, cfg.thumb_size)
-
-            # Per-channel contrast — reuse cached enhanced data when possible
-            if cfg.skip_enhance and cfg.enhanced_cache is not None:
-                enhanced = cfg.enhanced_cache
+            if cfg.mask_cache is not None:
+                mask_small = cfg.mask_cache
+                mask_name = None
             else:
-                enhanced = np.zeros_like(img_small, dtype=np.float64)
-                for ch_idx, ch_name in enumerate(cfg.channel_names):
-                    ch_cfg = cfg.ch_config.get(ch_name, {})
-                    if not ch_cfg.get("enabled", True):
-                        enhanced[:, :, ch_idx] = img_small[:, :, ch_idx].astype(np.float64)
-                        continue
-                    vmin = ch_cfg.get("vmin", 0)
-                    vmax = ch_cfg.get("vmax", cfg.dmax)
-                    band = img_small[:, :, ch_idx].astype(np.float64)
-                    band = np.clip((band - vmin) / max(vmax - vmin, 1e-10), 0, 1)
-                    if cfg.contrast_method == "gamma":
-                        band = apply_contrast(band, "gamma", gamma=cfg.contrast_gamma)
-                    elif cfg.contrast_method == "histogram_equalization":
-                        band = apply_contrast(band, "histogram_equalization")
-                    if cfg.invert:
-                        band = invert_image(band)
-                    enhanced[:, :, ch_idx] = band
+                mask_name, mask_small = _downscale_mask(mask_dict, cfg.thumb_size)
+
+            # Per-channel contrast enhancement
+            enhanced = _enhance_channels(
+                img_small, cfg.channel_names, cfg.ch_config, cfg.dmax,
+                cfg.contrast_method, cfg.contrast_gamma, cfg.invert,
+            )
 
             # Composite
             comp_config = {ch: {**c, "vmin": 0, "vmax": 1}
                            for ch, c in cfg.ch_config.items()}
             rgb = composite_image(enhanced, cfg.channel_names, comp_config, None, None)
 
-            # Polygons from downscaled mask
+            # Polygons from downscaled mask — use cache when available
             polygons = None
-            first_mask = None
-            if cfg.need_polygons and mask_small is not None:
-                first_mask = mask_small
-                polygons = extract_polygons(first_mask)
+            first_mask = mask_small if cfg.need_polygons else None
+            if cfg.polygons_cache is not None:
+                polygons = cfg.polygons_cache
+            elif cfg.need_polygons and mask_small is not None:
+                polygons = extract_polygons(mask_small)
 
             result = {
                 "rgb": np.ascontiguousarray(rgb),
@@ -160,12 +186,90 @@ class ImageWorker(QRunnable):
                 "gen": cfg.gen,
                 "thumb_size": cfg.thumb_size,
                 "sort_by_row": cfg.sort_by_row,
-                "enhanced": enhanced,
                 "row_idx": cfg.row_idx,
             }
             if loaded_from_disk:
                 result["raw_data"] = (img_data, mask_dict)
             self.signals.finished.emit(result)
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+
+class _FullResSignals(QObject):
+    finished = Signal(object, str, int, int, int, int, object, object, str, str)
+    # QPixmap, well, field, stack, tp, gen, mask, obj_values, overlay_col, overlay_cmap
+    error = Signal(str)
+
+
+class FullResWorker(QRunnable):
+    """Load and composite a single image at full resolution."""
+
+    def __init__(self, dm, row_idx: int, well: str, field: int, stack: int, tp: int,
+                 channel_names: list[str], ch_config: dict, dmax: float,
+                 contrast_method: str, contrast_gamma: float, invert: bool,
+                 gen: int = 0, overlay_alpha: float = 0.4, overlay_cmap: str = "Viridis",
+                 need_polygons: bool = True, obj_values: dict | None = None,
+                 overlay_col: str | None = None):
+        super().__init__()
+        self.signals = _FullResSignals()
+        self.setAutoDelete(False)
+        self._dm = dm
+        self._row_idx = row_idx
+        self._well = well
+        self._field = field
+        self._stack = stack
+        self._tp = tp
+        self._ch_names = channel_names
+        self._ch_config = ch_config
+        self._dmax = dmax
+        self._contrast = contrast_method
+        self._gamma = contrast_gamma
+        self._invert = invert
+        self._gen = gen
+        self._overlay_alpha = overlay_alpha
+        self._overlay_cmap = overlay_cmap
+        self._need_polygons = need_polygons
+        self._obj_values = obj_values or {}
+        self._overlay_col = overlay_col
+
+    def run(self) -> None:
+        try:
+            from microVis.processing.compositing import composite_image
+
+            img_data, mask_dict = self._dm.get_imageset(self._row_idx)
+
+            enhanced = _enhance_channels(
+                img_data, self._ch_names, self._ch_config, self._dmax,
+                self._contrast, self._gamma, self._invert,
+            )
+
+            comp_config = {ch: {**c, "vmin": 0, "vmax": 1}
+                           for ch, c in self._ch_config.items()}
+            rgb = composite_image(enhanced, self._ch_names, comp_config, None, None)
+            rgb = np.ascontiguousarray(rgb)
+
+            h, w, _ = rgb.shape
+            from PySide6.QtGui import QImage, QPixmap
+            qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg.copy())
+
+            # Extract mask for interactivity (hover/drag) and optional overlay
+            full_mask = None
+            if mask_dict:
+                first_key = next(iter(mask_dict))
+                full_mask = mask_dict[first_key]
+                if self._need_polygons and full_mask is not None:
+                    from microVis.processing.overlay import extract_polygons
+                    from microVis.widgets.image_display import _draw_polygon_overlays
+                    polygons = extract_polygons(full_mask)
+                    if polygons:
+                        pixmap = _draw_polygon_overlays(
+                            pixmap, polygons, self._overlay_alpha, self._overlay_cmap)
+
+            self.signals.finished.emit(
+                pixmap, self._well, self._field, self._stack, self._tp,
+                self._gen, full_mask, self._obj_values,
+                self._overlay_col or "", self._overlay_cmap)
         except Exception as e:
             self.signals.error.emit(str(e))
 
@@ -215,7 +319,6 @@ class CropWorker(QRunnable):
     def run(self) -> None:
         try:
             from microVis.processing.compositing import composite_image
-            from microVis.processing.contrast import apply_contrast, invert_image
 
             mask = self._mask
             label = self._label
@@ -246,25 +349,10 @@ class CropWorker(QRunnable):
                 crop_img[:, :, ch] *= obj_mask
 
             # Per-channel contrast
-            enhanced = np.zeros_like(crop_img, dtype=np.float64)
-            for ch_idx, ch_name in enumerate(self._ch_names):
-                if ch_idx >= crop_img.shape[2]:
-                    break
-                ch_cfg = self._ch_config.get(ch_name, {})
-                if not ch_cfg.get("enabled", True):
-                    enhanced[:, :, ch_idx] = crop_img[:, :, ch_idx]
-                    continue
-                vmin = ch_cfg.get("vmin", 0)
-                vmax = ch_cfg.get("vmax", self._dmax)
-                band = crop_img[:, :, ch_idx]
-                band = np.clip((band - vmin) / max(vmax - vmin, 1e-10), 0, 1)
-                if self._contrast == "gamma":
-                    band = apply_contrast(band, "gamma", gamma=self._gamma)
-                elif self._contrast == "histogram_equalization":
-                    band = apply_contrast(band, "histogram_equalization")
-                if self._invert:
-                    band = invert_image(band)
-                enhanced[:, :, ch_idx] = band
+            enhanced = _enhance_channels(
+                crop_img, self._ch_names, self._ch_config, self._dmax,
+                self._contrast, self._gamma, self._invert,
+            )
 
             # Composite
             comp_config = {
@@ -318,7 +406,9 @@ class ObjectExportWorker(QRunnable):
         object_mode: str,
         channel_mode: str,
         annotations: dict | None = None,
+        annotated_keys: set | None = None,
         gen: int = 0,
+        max_objects_per_image: int = 0,
     ):
         super().__init__()
         self.signals = _ExportSignals()
@@ -333,7 +423,9 @@ class ObjectExportWorker(QRunnable):
         self._save_dir = save_dir
         self._object_mode = object_mode
         self._channel_mode = channel_mode
+        self._max_obj = max_objects_per_image
         self._annotations = annotations
+        self._annotated_keys = annotated_keys
         self._gen = gen
 
     def run(self) -> None:
@@ -347,6 +439,9 @@ class ObjectExportWorker(QRunnable):
             rows = self._dm.lookup_row_indices(
                 self._wells, self._fields, self._stacks, self._tps
             )
+            # Filter to only annotated images when applicable
+            if self._annotated_keys is not None:
+                rows = [r for r in rows if (r[1], r[2], r[3], r[4]) in self._annotated_keys]
             if not rows:
                 self.signals.finished.emit({"count": 0, "save_dir": self._save_dir})
                 return
@@ -391,13 +486,24 @@ class ObjectExportWorker(QRunnable):
                     _log.info("Row %d (%s): mask shape=%s, dtype=%s, unique_labels=%d",
                               row_idx, img_name, mask.shape, mask.dtype, len(unique_labels))
 
-                    for label_id in unique_labels:
-                        # Check if we should export this object
+                    # Filter to eligible labels (annotation check)
+                    eligible_labels = unique_labels
+                    if self._object_mode == "All annotated":
+                        eligible_labels = np.array([
+                            lbl for lbl in unique_labels
+                            if (well, field, stack, tp, int(lbl)) in key_to_class
+                        ])
+                        if len(eligible_labels) == 0:
+                            continue
+
+                    # Random sample if max objects is set
+                    if self._max_obj > 0 and len(eligible_labels) > self._max_obj:
+                        eligible_labels = np.random.default_rng().choice(
+                            eligible_labels, size=self._max_obj, replace=False,
+                        )
+
+                    for label_id in eligible_labels:
                         lookup = (well, field, stack, tp, int(label_id))
-                        if self._object_mode == "All annotated":
-                            if lookup not in key_to_class:
-                                _log.debug("Skipping object %d (not in annotations)", label_id)
-                                continue
 
                         # Determine save directory (class subfolder for annotated)
                         obj_save_dir = save_path
@@ -423,7 +529,7 @@ class ObjectExportWorker(QRunnable):
                         x_max_p = min(w, x_max + pad + 1)
 
                         # Crop image (raw intensity values)
-                        crop_img = img_data[y_min_p:y_max_p, x_min_p:x_max_p, :]
+                        crop_img = img_data[y_min_p:y_max_p, x_min_p:x_max_p, :].copy()
                         crop_mask = mask[y_min_p:y_max_p, x_min_p:x_max_p]
 
                         # Apply mask (zero background, keep raw values for object)

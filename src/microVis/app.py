@@ -33,8 +33,7 @@ class _WheelBlocker(QObject):
                 w = w.parentWidget()
             return False
         except KeyboardInterrupt:
-            # Ctrl+C during event processing — force-exit to avoid GIL crash
-            os._exit(0)
+            sys.exit(0)
 
 
 def run_app(dataset_dir: str | None = None) -> None:

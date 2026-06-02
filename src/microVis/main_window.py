@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict
+from natsort import natsort_key
 from pathlib import Path
 
 import numpy as np
@@ -75,9 +75,9 @@ class MainWindow(QMainWindow):
         self._debounce = QTimer(singleShot=True, interval=300, timeout=self._refresh_images)
 
         # Performance: caches and state tracking
-        self._raw_cache: OrderedDict[int, tuple] = OrderedDict()  # LRU, row_idx → (img_data, mask_dict)
-        self._raw_cache_max: int = 50  # max cached images
-        self._processed_cache: dict[int, dict] = {}  # row_idx → {"enhanced": ndarray, "thumb_size": int}
+        self._raw_cache: dict[int, tuple] = {}  # row_idx → (img_data, mask_dict), unlimited, permanent until filter change
+        self._mask_cache: dict[int, np.ndarray] = {}  # row_idx → downscaled mask
+        self._polygon_cache: dict[int, list] = {}  # row_idx → extracted polygons
         self._gen: int = 0  # generation counter for cancelling stale workers
         self._last_state: dict = {}  # for change detection
         self._overlay_cache: tuple | None = None
@@ -87,6 +87,9 @@ class MainWindow(QMainWindow):
         self._pgw_httpd = None
         self._pgw_thread = None
         self._pgw_serving = False
+
+        # Full-res zoom cache
+        self._full_res_cache: dict[tuple, QPixmap] = {}  # (well, field, stack, tp) → QPixmap
         self._thread_pool = QThreadPool.globalInstance()
         self._pending_workers: int = 0
         self._shutting_down: bool = False
@@ -264,6 +267,7 @@ class MainWindow(QMainWindow):
 
         # Image display (pixel click)
         self._image_display.pixel_clicked.connect(self._on_pixel_clicked)
+        self._image_display.full_res_requested.connect(self._on_full_res_requested)
 
         # Label annotation controls
         ic.label_mask_selected.connect(self._on_label_mask_changed)
@@ -308,6 +312,9 @@ class MainWindow(QMainWindow):
             _log.exception("Failed to load dataset from %s", p)
             return
 
+        # Flush message queue — DataModule init can be slow (disk I/O + SQLite)
+        QApplication.processEvents()
+
         try:
             self._dataset_dir = str(p)
             self._data_view.set_dataset_label(str(p))
@@ -315,7 +322,9 @@ class MainWindow(QMainWindow):
             # Reset UI state for new dataset
             self._image_display.clear()
             self._raw_cache.clear()
-            self._processed_cache.clear()
+            self._mask_cache.clear()
+            self._polygon_cache.clear()
+            self._full_res_cache.clear()
             self._last_state.clear()
             self._overlay_cache = None
             self._overlay_cache_key = None
@@ -338,6 +347,10 @@ class MainWindow(QMainWindow):
             self._populate_data_controls()
             self._populate_label_controls()
 
+            # Pre-compute overlay data while DB is still open (avoids cold-start lag on first click)
+            self._precompute_overlay_data()
+            QApplication.processEvents()
+
             # Close DB connection — cached data remains available
             self._dm.close_db_only()
 
@@ -346,6 +359,19 @@ class MainWindow(QMainWindow):
             self._schedule_image_refresh()
         except Exception:
             _log.exception("Failed to initialize UI for dataset %s", p)
+
+    def _precompute_overlay_data(self) -> None:
+        """Pre-load profiling tables into cache while DB is still open.
+
+        This avoids expensive temporary SQLite connections on first well click.
+        """
+        try:
+            for tname in self._dm.get_profiling_tables():
+                self._dm.get_table_df(tname)  # populates _df_cache
+            # Pre-compute overlay cache with current (empty) state
+            self._compute_overlay_data()
+        except Exception:
+            _log.warning("Failed to pre-compute overlay data", exc_info=True)
 
     # ── Channel Config ───────────────────────────────────────────────────────
 
@@ -364,6 +390,8 @@ class MainWindow(QMainWindow):
     def _auto_range(self, low_pct: float = 1.0, high_pct: float = 99.0,
                     ch_name: str | None = None) -> tuple[float, float]:
         """Compute percentile range using downsampled images for speed."""
+        from concurrent.futures import ThreadPoolExecutor
+
         from microVis.worker import _downscale_image
 
         dm = self._dm
@@ -373,7 +401,8 @@ class MainWindow(QMainWindow):
         stacks = [int(s) for s in ic.get_selected_stacks()] or dm.get_stacks()
         tps = [int(t) for t in ic.get_selected_tps()] or dm.get_timepoints()
         rows = dm.lookup_row_indices(wells, fields, stacks, tps)
-        p_lo, p_hi = 0.0, 65535.0
+        dmax = DTYPE_MAX.get(str(self._dm.img_dtype), 65535.0)
+        p_lo, p_hi = 0.0, dmax
         if not rows:
             return p_lo, p_hi
 
@@ -391,15 +420,20 @@ class MainWindow(QMainWindow):
                 if ch_idx < 0:
                     return p_lo, p_hi
 
-            samples = []
-            for row_idx, _, _, _, _ in rows:
+            # Parallel load + downscale
+            def _load_and_downscale(row_idx):
                 raw_data = self._raw_cache.get(row_idx)
                 if raw_data is None:
                     raw_data = dm.get_imageset(row_idx)
-                    self._cache_put(row_idx, raw_data)
+                    self._raw_cache[row_idx] = raw_data
                 img_data, _ = raw_data
-                # Downscale for fast percentile computation
-                img_small = _downscale_image(img_data, thumb_size)
+                return _downscale_image(img_data, thumb_size)
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                thumbnails = list(pool.map(_load_and_downscale, [r[0] for r in rows]))
+
+            samples = []
+            for img_small in thumbnails:
                 if ch_name is not None:
                     if ch_idx < img_small.shape[2]:
                         samples.append(img_small[:, :, ch_idx].ravel())
@@ -611,28 +645,44 @@ class MainWindow(QMainWindow):
         df = df.copy()
         if self._metadata_merged is not None and "well" in df.columns:
             df = self._join_metadata(df)
+        _log.info("PyGwalker: sending %d rows, columns=%s", len(df), list(df.columns))
 
-        # Sample up to 200 rows per (directory, well, field, stack, timepoint) group
-        group_cols = [c for c in ("directory", "well", "field", "stack", "timepoint") if c in df.columns]
+        # Known profiling columns — always treat as categorical dimensions
+        profiling_cols = {"directory", "well", "field", "stack", "timepoint", "label"}
+
+        # Sample up to 200 rows per profiling group
+        group_cols = [c for c in profiling_cols - {"label"} if c in df.columns]
         if group_cols and len(df) > 200:
             before = len(df)
-            df = (
+            sampled_idx = (
                 df.groupby(group_cols, group_keys=False)
-                .apply(lambda g: g.sample(n=min(200, len(g)), random_state=42))
-                .reset_index(drop=True)
+                .apply(lambda g: g.sample(n=min(200, len(g)), random_state=42).index)
+                .explode()
+                .values
             )
+            df = df.loc[sampled_idx].reset_index(drop=True)
             _log.info("PyGwalker: sampled %d → %d rows (max 200 per group)", before, len(df))
 
         try:
+            # Disable PyGwalker network features to prevent SSL timeout on offline machines
+            import os
+            os.environ.setdefault("PYGWALKER_UPDATE_CHECK", "0")
+            os.environ.setdefault("KANARIES_API_KEY", "")
+            os.environ.setdefault("PYGWALKER_TELEMETRY", "0")
             from pygwalker.api.webserver import (
                 BaseCommunication, CustomTCPServer, PygWalker,
                 _GlobalState, _create_handler_with_walker, _open_browser, find_free_port,
             )
 
+            from pygwalker.data_parsers.base import FieldSpec
+            field_specs = [
+                FieldSpec(fname=c, analytic_type="dimension" if c in profiling_cols else "?")
+                for c in df.columns
+            ]
             walker = PygWalker(
                 gid="pgw",
                 dataset=df,
-                field_specs=[],
+                field_specs=field_specs,
                 spec="",
                 source_invoke_code="",
                 theme_key="g2",
@@ -759,14 +809,63 @@ class MainWindow(QMainWindow):
     def _on_auto_all(self) -> None:
         if self._dm is None:
             return
+        from concurrent.futures import ThreadPoolExecutor
+
+        from microVis.worker import _downscale_image
+
         ic = self._image_controls
         low_pct = ic.auto_low.value()
         high_pct = ic.auto_high.value()
-        for ch, cfg in self._ch_config.items():
-            if cfg.get("enabled", True):
-                p_lo, p_hi = self._auto_range(low_pct, high_pct, ch_name=ch)
-                cfg["vmin"] = p_lo
-                cfg["vmax"] = p_hi
+
+        dm = self._dm
+        channels = dm.channels
+        enabled_chs = [ch for ch, cfg in self._ch_config.items() if cfg.get("enabled", True)]
+        if not enabled_chs:
+            return
+
+        wells = sorted(self._selected_wells) if self._selected_wells else dm.get_wells()
+        fields = [int(f) for f in ic.get_selected_fields()] or dm.get_fields()
+        stacks = [int(s) for s in ic.get_selected_stacks()] or dm.get_stacks()
+        tps = [int(t) for t in ic.get_selected_tps()] or dm.get_timepoints()
+        rows = dm.lookup_row_indices(wells, fields, stacks, tps)
+        if not rows:
+            return
+
+        max_sample = 16
+        if len(rows) > max_sample:
+            step = len(rows) // max_sample
+            rows = rows[::step][:max_sample]
+
+        thumb_size = 128
+        ch_indices = {ch: channels.index(ch) for ch in enabled_chs if ch in channels}
+        ch_samples: dict[str, list] = {ch: [] for ch in ch_indices}
+
+        try:
+            # Parallel load + downscale for uncached images
+            def _load_and_downscale(row_idx):
+                raw_data = self._raw_cache.get(row_idx)
+                if raw_data is None:
+                    raw_data = dm.get_imageset(row_idx)
+                    self._raw_cache[row_idx] = raw_data
+                img_data, _ = raw_data
+                return _downscale_image(img_data, thumb_size)
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                thumbnails = list(pool.map(_load_and_downscale, [r[0] for r in rows]))
+
+            for img_small in thumbnails:
+                for ch, idx in ch_indices.items():
+                    if idx < img_small.shape[2]:
+                        ch_samples[ch].append(img_small[:, :, idx].ravel())
+
+            for ch, samples in ch_samples.items():
+                if samples:
+                    all_pixels = np.concatenate(samples)
+                    self._ch_config[ch]["vmin"] = float(np.percentile(all_pixels, low_pct))
+                    self._ch_config[ch]["vmax"] = float(np.percentile(all_pixels, high_pct))
+        except Exception:
+            _log.warning("Auto-range percentile computation failed", exc_info=True)
+
         self._image_controls.update_channel_values(self._ch_config)
         self._schedule_image_refresh()
 
@@ -817,24 +916,20 @@ class MainWindow(QMainWindow):
         self._gen += 1
         self._pending_workers = 0
 
-    def _cache_put(self, row_idx: int, data: tuple) -> None:
-        """Add to LRU cache, evicting oldest if full."""
-        if row_idx in self._raw_cache:
-            self._raw_cache.move_to_end(row_idx)
-        else:
-            if len(self._raw_cache) >= self._raw_cache_max:
-                self._raw_cache.popitem(last=False)
-            self._raw_cache[row_idx] = data
-
     def _detect_change(self) -> str:
         """Compare current state to last state. Returns change category."""
         ic = self._image_controls
+        # Normalize ch_config so colors are always tuples (avoids list != tuple)
+        normalized_ch = {
+            ch: {k: tuple(v) if isinstance(v, list) else v for k, v in cfg.items()}
+            for ch, cfg in self._ch_config.items()
+        }
         new_state = {
             "wells": frozenset(self._selected_wells),
             "fields": tuple(ic.get_selected_fields()),
             "stacks": tuple(ic.get_selected_stacks()),
             "tps": tuple(ic.get_selected_tps()),
-            "ch_config": dict(self._ch_config),
+            "ch_config": normalized_ch,
             "contrast": self._contrast_method,
             "gamma": self._contrast_gamma,
             "invert": self._invert,
@@ -880,10 +975,12 @@ class MainWindow(QMainWindow):
             return "contrast"
 
         if (old.get("overlay_col") != new_state["overlay_col"]
-                or old.get("overlay_table") != new_state["overlay_table"]
-                or old.get("overlay_cmap") != new_state["overlay_cmap"]
-                or old.get("overlay_alpha") != new_state["overlay_alpha"]):
+                or old.get("overlay_table") != new_state["overlay_table"]):
             return "overlay"
+
+        if (old.get("overlay_cmap") != new_state["overlay_cmap"]
+                or old.get("overlay_alpha") != new_state["overlay_alpha"]):
+            return "overlay_styling"
 
         if old.get("sort_by_row") != new_state["sort_by_row"]:
             return "sort"
@@ -912,13 +1009,17 @@ class MainWindow(QMainWindow):
         if not fields or not stacks or not tps:
             self._image_display.clear()
             self._raw_cache.clear()
-            self._processed_cache.clear()
+            self._mask_cache.clear()
+            self._polygon_cache.clear()
+            self._full_res_cache.clear()
             return
 
         if not self._selected_wells:
             self._image_display.clear()
             self._raw_cache.clear()
-            self._processed_cache.clear()
+            self._mask_cache.clear()
+            self._polygon_cache.clear()
+            self._full_res_cache.clear()
             return
 
         thumb_size = int(ic.image_size.value())
@@ -932,8 +1033,14 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if change == "channel_toggle" and self._processed_cache:
-            # Re-composite from cached enhanced data — no flash, near-instant
+        if change == "overlay_styling" and self._polygon_cache:
+            # Re-render cached polygons with new styling — no workers needed
+            self._image_display.restyle_overlay(
+                self._overlay_alpha, self._overlay_cmap, self._polygon_cache)
+            return
+
+        if change == "channel_toggle" and self._raw_cache:
+            # Re-enhance from cached raw at thumbnail res — near-instant
             self._dispatch_image_workers(thumb_size, saved_state=saved_state,
                                          channel_toggle=True)
             return
@@ -945,7 +1052,9 @@ class MainWindow(QMainWindow):
         )
         if not use_cache:
             self._raw_cache.clear()
-            self._processed_cache.clear()
+            self._mask_cache.clear()
+            self._polygon_cache.clear()
+            self._full_res_cache.clear()
 
         self._dispatch_image_workers(thumb_size, saved_state=saved_state)
 
@@ -961,7 +1070,6 @@ class MainWindow(QMainWindow):
         stacks_int = [int(s) for s in self._image_controls.get_selected_stacks()]
         tps_int = [int(t) for t in self._image_controls.get_selected_tps()]
         rows_info = self._dm.lookup_row_indices(wells, fields_int, stacks_int, tps_int)
-        from natsort import natsort_key
         rows_info.sort(key=lambda r: (natsort_key(str(r[1])), r[2], r[3], r[4]))
 
         if not rows_info:
@@ -995,13 +1103,9 @@ class MainWindow(QMainWindow):
         for row_idx, well, field, stack, tp in rows_info:
             raw_data = self._raw_cache.get(row_idx)
 
-            # Check processed cache for enhanced data
-            proc = self._processed_cache.get(row_idx)
-            enhanced_cache = None
-            skip_enhance = False
-            if channel_toggle and proc is not None and proc.get("thumb_size") == thumb_size:
-                enhanced_cache = proc["enhanced"]
-                skip_enhance = True
+            # Use cached mask and polygons when available (skip re-extraction)
+            mask_cache = self._mask_cache.get(row_idx)
+            polygons_cache = self._polygon_cache.get(row_idx) if need_polygons else None
 
             config = ImageWorkerConfig(
                 row_idx=row_idx, well=well, field=field, stack=stack, tp=tp,
@@ -1011,13 +1115,13 @@ class MainWindow(QMainWindow):
                 contrast_gamma=self._contrast_gamma, invert=self._invert,
                 need_polygons=need_polygons,
                 dm=self._dm,
-                enhanced_cache=enhanced_cache,
-                skip_enhance=skip_enhance,
                 overlay_val=overlay_values.get(well),
                 overlay_col=self._overlay_col,
                 n_objects=object_counts.get(well),
                 obj_values=per_object_values.get(well, {}),
                 gen=gen, sort_by_row=sort_by_row,
+                mask_cache=mask_cache,
+                polygons_cache=polygons_cache,
             )
             worker = ImageWorker(config)
             worker.signals.finished.connect(
@@ -1083,13 +1187,13 @@ class MainWindow(QMainWindow):
             return
         # Cache raw data if worker loaded from disk
         if "raw_data" in result:
-            self._cache_put(result["row_idx"], result["raw_data"])
-        # Cache enhanced data for future channel-toggle reuse
-        if "enhanced" in result:
-            self._processed_cache[result["row_idx"]] = {
-                "enhanced": result["enhanced"],
-                "thumb_size": result["thumb_size"],
-            }
+            self._raw_cache[result["row_idx"]] = result["raw_data"]
+        # Cache mask and polygons for overlay fast paths
+        row_idx = result["row_idx"]
+        if result.get("mask") is not None:
+            self._mask_cache[row_idx] = result["mask"]
+        if result.get("polygons") is not None:
+            self._polygon_cache[row_idx] = result["polygons"]
         self._pending_workers = max(0, self._pending_workers - 1)
         saved_state = getattr(self, "_saved_state", None)
         self._image_display.add_result(
@@ -1105,21 +1209,43 @@ class MainWindow(QMainWindow):
             return
         # Cache raw data if worker loaded from disk
         if "raw_data" in result:
-            self._cache_put(result["row_idx"], result["raw_data"])
-        # Cache enhanced data for future reuse
-        if "enhanced" in result:
-            self._processed_cache[result["row_idx"]] = {
-                "enhanced": result["enhanced"],
-                "thumb_size": result["thumb_size"],
-            }
+            self._raw_cache[result["row_idx"]] = result["raw_data"]
+        # Cache mask and polygons for overlay fast paths
+        row_idx = result["row_idx"]
+        if result.get("mask") is not None:
+            self._mask_cache[row_idx] = result["mask"]
+        if result.get("polygons") is not None:
+            self._polygon_cache[row_idx] = result["polygons"]
         self._channel_toggle_results.append(result)
         self._pending_workers = max(0, self._pending_workers - 1)
         # When all workers done, update pixmaps in-place (no flash)
         if self._pending_workers == 0:
+            # Collect thumbnails currently showing full-res
+            full_res_keys = set()
+            from microVis.widgets.image_display import _ThumbnailView
+            for row_widget, _ in self._image_display._row_widgets.values():
+                for thumb in row_widget.findChildren(_ThumbnailView):
+                    if thumb._is_full_res and thumb._full_res_item is not None:
+                        full_res_keys.add((thumb._well, thumb._field,
+                                           thumb._stack, thumb._tp))
+
             self._image_display.update_pixmaps_in_place(
                 self._channel_toggle_results,
                 self._overlay_alpha, self._overlay_cmap,
+                remove_full_res=False,  # keep full-res visible until re-composited
             )
+
+            # Re-dispatch full-res workers for thumbnails that were zoomed in
+            if full_res_keys:
+                from microVis.widgets.image_display import _ThumbnailView
+                for row_widget, _ in self._image_display._row_widgets.values():
+                    for thumb in row_widget.findChildren(_ThumbnailView):
+                        key = (thumb._well, thumb._field, thumb._stack, thumb._tp)
+                        if key in full_res_keys:
+                            thumb._full_res_gen += 1
+                for key in full_res_keys:
+                    self._on_full_res_requested(*key, gen=0)
+
             self._channel_toggle_results = []
 
     def _on_worker_error(self, msg: str) -> None:
@@ -1128,7 +1254,8 @@ class MainWindow(QMainWindow):
         self._pending_workers = max(0, self._pending_workers - 1)
         _log.warning("Image worker error: %s", msg)
 
-    def _on_pixel_clicked(self, well: str, field: int, stack: int, tp: int, x: int, y: int) -> None:
+    def _on_pixel_clicked(self, well: str, field: int, stack: int, tp: int,
+                           x: int, y: int, pixmap_w: int, pixmap_h: int) -> None:
         if self._dm is None:
             return
         try:
@@ -1138,14 +1265,90 @@ class MainWindow(QMainWindow):
             row_idx = rows[0][0]
             img_data, _ = self._dm.get_imageset(row_idx)
             channels = self._dm.channels
-            parts = [f"{well} f{field} z{stack} t{tp} @ ({x},{y})"]
+
+            # Convert scene coordinates to raw image coordinates.
+            # x, y are in pixmap pixel space (scene coords).
+            # Scale by raw/pixmap ratio to get raw image coordinates.
+            h_raw, w_raw = img_data.shape[:2]
+            rx = min(int(x * w_raw / pixmap_w), w_raw - 1)
+            ry = min(int(y * h_raw / pixmap_h), h_raw - 1)
+
+            parts = [f"{well} f{field} z{stack} t{tp} @ ({rx},{ry})"]
             for i, ch in enumerate(channels):
                 if i < img_data.shape[2]:
-                    val = img_data[y, x, i]
+                    val = img_data[ry, rx, i]
                     parts.append(f"| {ch}: {val:.1f}")
             self._pixel_info.set_text("  ".join(parts))
         except Exception:
             _log.warning("Failed to read pixel info", exc_info=True)
+
+    # ── Full-Res Zoom ───────────────────────────────────────────────────────
+
+    def _on_full_res_requested(self, well: str, field: int, stack: int, tp: int,
+                               gen: int = 0) -> None:
+        """Load and display full-resolution image when user zooms past threshold."""
+        if self._dm is None:
+            return
+
+        # Look up row index
+        rows = self._dm.lookup_row_indices([well], [field], [stack], [tp])
+        if not rows:
+            return
+        row_idx = rows[0][0]
+
+        from microVis.worker import FullResWorker
+        channel_names = list(self._ch_config.keys())
+        dmax = DTYPE_MAX.get(str(self._dm.img_dtype), 65535.0)
+
+        need_polygons = self._overlay_col is not None and self._overlay_table is not None
+        obj_values = {}
+        if need_polygons and self._overlay_cache is not None:
+            _, _, per_object_values = self._overlay_cache
+            obj_values = per_object_values.get(well, {})
+
+        worker = FullResWorker(
+            dm=self._dm, row_idx=row_idx,
+            well=well, field=field, stack=stack, tp=tp,
+            channel_names=channel_names, ch_config=self._ch_config,
+            dmax=dmax,
+            contrast_method=self._contrast_method,
+            contrast_gamma=self._contrast_gamma,
+            invert=self._invert,
+            gen=gen,
+            overlay_alpha=self._overlay_alpha,
+            overlay_cmap=self._overlay_cmap,
+            need_polygons=need_polygons,
+            obj_values=obj_values,
+            overlay_col=self._overlay_col,
+        )
+        worker.signals.finished.connect(self._on_full_res_finished)
+        worker.signals.error.connect(
+            lambda msg: _log.warning("Full-res worker error: %s", msg))
+        self._thread_pool.start(worker)
+
+    def _on_full_res_finished(self, pixmap, well: str, field: int,
+                               stack: int, tp: int, gen: int,
+                               mask=None, obj_values=None,
+                               overlay_col="", overlay_cmap="") -> None:
+        """Apply full-res pixmap to the matching thumbnail."""
+        self._apply_full_res_pixmap(
+            (well, field, stack, tp), pixmap, gen, mask,
+            obj_values or {}, overlay_col)
+
+    def _apply_full_res_pixmap(self, key: tuple, pixmap, gen: int = 0,
+                               mask=None, obj_values=None,
+                               overlay_col="") -> None:
+        """Find the thumbnail widget and set its full-res pixmap."""
+        from microVis.widgets.image_display import _ThumbnailView
+        well, field, stack, tp = key
+        for row_widget, _row_layout in self._image_display._row_widgets.values():
+            for thumb in row_widget.findChildren(_ThumbnailView):
+                if (thumb._well == well and thumb._field == field
+                        and thumb._stack == stack and thumb._tp == tp):
+                    thumb.set_full_res_pixmap(
+                        pixmap, gen, mask=mask,
+                        obj_values=obj_values, overlay_col=overlay_col)
+                    return
 
     # ── Label Annotation Handlers ────────────────────────────────────────────
 
@@ -1265,7 +1468,7 @@ class MainWindow(QMainWindow):
         if raw_data is None:
             try:
                 raw_data = self._dm.get_imageset(row_idx)
-                self._cache_put(row_idx, raw_data)
+                self._raw_cache[row_idx] = raw_data
             except Exception:
                 _log.warning("Failed to load image for crop: row %d", row_idx, exc_info=True)
                 return
@@ -1368,12 +1571,23 @@ class MainWindow(QMainWindow):
                 return
 
         # Get wells/fields based on mode
+        annotated_keys = None  # set of (well, field, stack, tp) for "All annotated"
         if object_mode == "All displayed":
             wells = sorted(self._selected_wells) if self._selected_wells else self._dm.get_wells()
             fields = [int(f) for f in ic.get_selected_fields()]
             stacks = [int(s) for s in ic.get_selected_stacks()]
             tps = [int(t) for t in ic.get_selected_tps()]
-        else:  # "All images" or "All annotated"
+        elif object_mode == "All annotated" and annotations:
+            # Only scan images that contain annotated objects
+            annotated_keys = set()
+            for keys in annotations.values():
+                for key in keys:
+                    annotated_keys.add((key.well, key.field, key.stack, key.tp))
+            wells = sorted({c[0] for c in annotated_keys})
+            fields = sorted({c[1] for c in annotated_keys})
+            stacks = sorted({c[2] for c in annotated_keys})
+            tps = sorted({c[3] for c in annotated_keys})
+        else:  # "All images"
             wells = self._dm.get_wells()
             fields = self._dm.get_fields()
             stacks = self._dm.get_stacks()
@@ -1381,13 +1595,15 @@ class MainWindow(QMainWindow):
 
         # Disable UI during export
         ic.set_export_enabled(False)
-        ic.set_status("Exporting objects...")
+        self._pixel_info.set_text("Exporting objects...")
 
         # Run export in background thread
         self._export_gen = getattr(self, "_export_gen", 0) + 1
         gen = self._export_gen
 
         from microVis.worker import ObjectExportWorker
+
+        max_objects = ic.get_export_max_objects()
 
         worker = ObjectExportWorker(
             dm=self._dm,
@@ -1397,11 +1613,13 @@ class MainWindow(QMainWindow):
             timepoints=tps,
             mask_name=mask_name,
             channel_names=self._dm.channels,
+            annotated_keys=annotated_keys,
             save_dir=str(save_path),
             object_mode=object_mode,
             channel_mode=channel_mode,
             annotations=annotations,
             gen=gen,
+            max_objects_per_image=max_objects,
         )
         worker.signals.progress.connect(self._on_export_progress)
         worker.signals.finished.connect(self._on_export_finished)
@@ -1410,20 +1628,20 @@ class MainWindow(QMainWindow):
 
     def _on_export_progress(self, current: int, total: int) -> None:
         """Update export progress."""
-        self._image_controls.set_status(f"Exporting: {current}/{total} images...")
+        self._pixel_info.set_text(f"Exporting: {current}/{total} images...")
 
     def _on_export_finished(self, result: dict) -> None:
         """Handle export completion."""
         self._image_controls.set_export_enabled(True)
         count = result.get("count", 0)
         save_dir = result.get("save_dir", "")
-        self._image_controls.set_status(f"Exported {count} objects")
+        self._pixel_info.set_text(f"Exported {count} objects to {save_dir}")
         _log.info("Exported %d objects to %s", count, save_dir)
 
     def _on_export_error(self, msg: str) -> None:
         """Handle export error."""
         self._image_controls.set_export_enabled(True)
-        self._image_controls.set_status(f"Export error: {msg}")
+        self._pixel_info.set_text(f"Export error: {msg}")
         _log.warning("Export error: %s", msg)
 
     # ── Data View Handler ────────────────────────────────────────────────────
@@ -1454,10 +1672,9 @@ class MainWindow(QMainWindow):
         self._shutting_down = True
         self._shutdown_pygwalker()
         self._cancel_workers()
-        self._thread_pool.waitForDone(3000)
+        self._thread_pool.waitForDone(2000)
+        # Flush Windows message queue to clear "Not Responding" state
+        QApplication.processEvents()
         if self._dm is not None:
             self._dm.close()
         super().closeEvent(event)
-        # Force-exit to avoid GIL crash from PyGwalker's background analytics threads
-        import os
-        os._exit(0)

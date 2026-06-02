@@ -229,8 +229,8 @@ class ImageControls(QScrollArea):
 
         # Image size
         self._image_size = NoScrollDoubleSpinBox()
-        self._image_size.setRange(50, 500)
-        self._image_size.setValue(250)
+        self._image_size.setRange(50, 1000)
+        self._image_size.setValue(256)
         self._image_size.setDecimals(0)
         self._image_size.setSingleStep(10)
         self._image_size.setButtonSymbols(QDoubleSpinBox.NoButtons)
@@ -296,6 +296,18 @@ class ImageControls(QScrollArea):
         self._overlay_alpha.setRange(0, 100)
         self._overlay_alpha.setValue(40)
         _row("Alpha", self._overlay_alpha, overlay_layout)
+
+        clear_btn_row = QHBoxLayout()
+        clear_btn_row.setSpacing(8)
+        clear_btn_row.addStretch()
+        self._overlay_clear_btn = QPushButton("Clear")
+        self._overlay_clear_btn.setProperty("class", "secondary")
+        self._overlay_clear_btn.setFixedSize(64, 24)
+        self._overlay_clear_btn.clicked.connect(lambda: self._overlay_col.setCurrentIndex(0))
+        clear_btn_row.addWidget(self._overlay_clear_btn)
+        clear_btn_row.addStretch()
+        overlay_layout.addLayout(clear_btn_row)
+
         self._layout.addWidget(grp_overlay)
 
         # ── Object Label ──
@@ -427,6 +439,17 @@ class ImageControls(QScrollArea):
         )
         _row("Channel", self._export_channel_combo, export_layout)
 
+        # Max objects per image
+        self._export_max_obj = NoScrollDoubleSpinBox()
+        self._export_max_obj.setRange(0, 10000)
+        self._export_max_obj.setValue(0)
+        self._export_max_obj.setDecimals(0)
+        self._export_max_obj.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self._export_max_obj.setToolTip(
+            "Max objects to randomly sample per image (0 = no limit)"
+        )
+        _row("Max obj", self._export_max_obj, export_layout)
+
         # Save directory selection
         dir_row = QHBoxLayout()
         dir_row.setSpacing(4)
@@ -460,12 +483,6 @@ class ImageControls(QScrollArea):
         export_btn_row.addStretch()
         export_layout.addLayout(export_btn_row)
         self._layout.addWidget(grp_export)
-
-        # Status label
-        self._status_label = QLabel("Ready")
-        self._status_label.setStyleSheet("color: #888; font-size: 8pt; padding: 4px;")
-        self._status_label.setWordWrap(True)
-        self._layout.addWidget(self._status_label)
 
         self._layout.addStretch()
         self.setWidget(container)
@@ -681,12 +698,17 @@ class ImageControls(QScrollArea):
         """Return the export directory path (empty = default)."""
         return self._export_dir_input.text().strip()
 
+    def get_export_max_objects(self) -> int:
+        """Return max objects per image (0 = no limit)."""
+        return int(self._export_max_obj.value())
+
     def set_export_enabled(self, enabled: bool) -> None:
         """Enable/disable export controls."""
         self._export_btn.setEnabled(enabled)
         self._export_mask_combo.setEnabled(enabled)
         self._export_object_combo.setEnabled(enabled)
         self._export_channel_combo.setEnabled(enabled)
+        self._export_max_obj.setEnabled(enabled)
         self._export_dir_input.setEnabled(enabled)
         self._export_dir_btn.setEnabled(enabled)
 
@@ -700,7 +722,3 @@ class ImageControls(QScrollArea):
         # If current selection is "All annotated" but no annotations, switch to "All displayed"
         if not has_annotations and self._export_object_combo.currentIndex() == 2:
             self._export_object_combo.setCurrentIndex(0)
-
-    def set_status(self, text: str) -> None:
-        """Update the status label."""
-        self._status_label.setText(text)

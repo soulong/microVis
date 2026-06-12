@@ -159,21 +159,24 @@ class _ThumbnailView(QGraphicsView):
             return
 
         # Check for drag initiation (left button held + moved beyond threshold)
-        if (
-            self._drag_start_pos is not None
-            and self._mask is not None
-            and event.buttons() & Qt.LeftButton
-            and (event.pos() - self._drag_start_pos).manhattanLength() > 8
-        ):
-            scene_pos = self.mapToScene(event.pos())
-            x = int(scene_pos.x())
-            y = int(scene_pos.y())
-            h, w = self._mask.shape
-            if 0 <= x < w and 0 <= y < h:
-                lbl = int(self._mask[y, x])
-                if lbl > 0:
-                    self._start_object_drag(lbl)
-                    return
+        if self._drag_start_pos is not None and event.buttons() & Qt.LeftButton:
+            dist = (event.pos() - self._drag_start_pos).manhattanLength()
+            if dist > 4 and self._mask is not None:
+                scene_pos = self.mapToScene(event.pos())
+                x = int(scene_pos.x())
+                y = int(scene_pos.y())
+                h, w = self._mask.shape
+                if 0 <= x < w and 0 <= y < h:
+                    lbl = int(self._mask[y, x])
+                    if lbl > 0:
+                        self._start_object_drag(lbl)
+                        return
+            if dist > 4 and self._mask is None:
+                self._panning = True
+                self._pan_start = event.pos()
+                self.setCursor(Qt.ClosedHandCursor)
+                event.accept()
+                return
 
         # Per-object tooltip on hover
         if self._mask is not None:
@@ -210,19 +213,25 @@ class _ThumbnailView(QGraphicsView):
             self.setCursor(Qt.ArrowCursor)
             event.accept()
         elif event.button() == Qt.LeftButton:
-            # Short click = emit pixel_clicked (preserves existing behavior)
-            if self._drag_start_pos is not None:
-                scene_pos = self.mapToScene(event.pos())
-                x = int(scene_pos.x())
-                y = int(scene_pos.y())
-                # Scene coords are always in thumbnail pixel space (both zoomed and not).
-                # Use thumbnail pixmap for bounds check and coordinate conversion.
-                pw = self._pixmap_item.pixmap().width()
-                ph = self._pixmap_item.pixmap().height()
-                if 0 <= x < pw and 0 <= y < ph:
-                    self.pixel_clicked.emit(self._well, self._field, self._stack, self._tp, x, y, pw, ph)
-            self._drag_start_pos = None
-            super().mouseReleaseEvent(event)
+            if self._panning:
+                self._panning = False
+                self._pan_start = None
+                self.setCursor(Qt.ArrowCursor)
+                event.accept()
+            else:
+                # Short click = emit pixel_clicked (preserves existing behavior)
+                if self._drag_start_pos is not None:
+                    scene_pos = self.mapToScene(event.pos())
+                    x = int(scene_pos.x())
+                    y = int(scene_pos.y())
+                    # Scene coords are always in thumbnail pixel space (both zoomed and not).
+                    # Use thumbnail pixmap for bounds check and coordinate conversion.
+                    pw = self._pixmap_item.pixmap().width()
+                    ph = self._pixmap_item.pixmap().height()
+                    if 0 <= x < pw and 0 <= y < ph:
+                        self.pixel_clicked.emit(self._well, self._field, self._stack, self._tp, x, y, pw, ph)
+                self._drag_start_pos = None
+                super().mouseReleaseEvent(event)
         else:
             super().mouseReleaseEvent(event)
 

@@ -40,7 +40,7 @@ microvis "/path/to/Measurement 1"
 After installing in the `micro` conda environment, create a desktop shortcut that launches microVis without opening a console window:
 
 ```bash
-microvis-install-shortcut
+microvis install-shortcut
 ```
 
 This places a shortcut on the Desktop and in the Start Menu. The shortcut uses `pythonw.exe` from the `micro` environment for a clean, console-free launch.

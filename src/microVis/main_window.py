@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtCore import QObject, Qt, QThread, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -27,7 +27,7 @@ from microVis._settings import (
     PLATE_FORMATS,
     QUALITATIVE_PALETTES,
 )
-from microVis.io.data_module import DataModule
+from microVis.io.data_module import DataModule, read_params_yaml, write_params_yaml
 from microVis.log_utils import get_logger
 from microVis.widgets._event_filter import RotatedLabel
 from microVis.widgets.data_view import DataView
@@ -42,6 +42,51 @@ from microVis.worker import CropWorker, ImageWorker, ImageWorkerConfig
 _log = get_logger("microVis.main_window")
 
 
+
+
+class _PygwalkerDataLoader(QObject):
+    """Load and prepare PyGwalker DataFrame in a background thread."""
+
+    data_ready = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(self, dm, table_name, metadata_df=None):
+        super().__init__()
+        self._dm = dm
+        self._table_name = table_name
+        self._metadata_df = metadata_df
+        self._profiling_cols = {"directory", "well", "field", "stack", "timepoint", "label"}
+
+    def load(self):
+        try:
+            df = self._dm.get_table_df(self._table_name)
+            if df is None or df.empty:
+                self.error_occurred.emit("No data available")
+                return
+
+            df = df.copy()
+            if self._metadata_df is not None and "well" in df.columns:
+                meta_cols = [c for c in self._metadata_df.columns if c != "well"]
+                merged = df.merge(self._metadata_df, on="well", how="left")
+                other_cols = [c for c in merged.columns if c not in meta_cols and c != "well"]
+                df = merged[["well"] + meta_cols + other_cols]
+
+            group_cols = [c for c in self._profiling_cols - {"label"} if c in df.columns]
+            sampled = False
+            before = len(df)
+            if group_cols and len(df) > 200:
+                sampled_idx = (
+                    df.groupby(group_cols, group_keys=False)
+                    .apply(lambda g: g.sample(n=min(200, len(g)), random_state=42).index)
+                    .explode()
+                    .values
+                )
+                df = df.loc[sampled_idx].reset_index(drop=True)
+                sampled = True
+
+            self.data_ready.emit((df, sampled, before))
+        except Exception as e:
+            self.error_occurred.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -87,6 +132,8 @@ class MainWindow(QMainWindow):
         self._pgw_httpd = None
         self._pgw_thread = None
         self._pgw_serving = False
+        self._pgw_loader = None
+        self._pgw_loader_thread = None
 
         # Full-res zoom cache
         self._full_res_cache: dict[tuple, QPixmap] = {}  # (well, field, stack, tp) → QPixmap
@@ -104,7 +151,18 @@ class MainWindow(QMainWindow):
 
         # Load dataset if provided
         if dataset_dir:
-            self._load_dataset(dataset_dir)
+            patterns = read_params_yaml(Path(dataset_dir))
+            self._data_view.set_patterns(
+                image=patterns["image_pattern"],
+                mask=patterns["mask_pattern"],
+                subdir=patterns["image_subdir_pattern"],
+            )
+            self._load_dataset(
+                dataset_dir,
+                image_pattern=patterns["image_pattern"],
+                mask_pattern=patterns["mask_pattern"],
+                image_subdir_pattern=patterns["image_subdir_pattern"],
+            )
 
     # ── UI Construction ──────────────────────────────────────────────────────
 
@@ -284,6 +342,7 @@ class MainWindow(QMainWindow):
 
         # Data view
         self._data_view.dataset_browse_clicked.connect(self._on_dataset_browse)
+        self._data_view.reload_clicked.connect(self._on_reload_clicked)
         self._data_view.pygwalker_open_clicked.connect(self._on_pygwalker_open)
         self._data_view.metadata_browse_clicked.connect(self._on_metadata_browse)
         self._data_view.metadata_merge_clicked.connect(self._on_metadata_merge)
@@ -296,18 +355,42 @@ class MainWindow(QMainWindow):
     def _on_dataset_browse(self) -> None:
         from PySide6.QtWidgets import QFileDialog
         path = QFileDialog.getExistingDirectory(self, "Select Dataset Directory")
-        if path:
-            self._load_dataset(path)
+        if not path:
+            return
 
-    def _load_dataset(self, path: str) -> None:
+        p = Path(path)
+        patterns = read_params_yaml(p)
+        self._data_view.set_patterns(
+            image=patterns["image_pattern"],
+            mask=patterns["mask_pattern"],
+            subdir=patterns["image_subdir_pattern"],
+        )
+
+        self._load_dataset(
+            str(p),
+            image_pattern=patterns["image_pattern"],
+            mask_pattern=patterns["mask_pattern"],
+            image_subdir_pattern=patterns["image_subdir_pattern"],
+        )
+
+    def _load_dataset(
+        self,
+        path: str,
+        image_pattern: str = "",
+        mask_pattern: str = "",
+        image_subdir_pattern: str = "",
+    ) -> None:
         p = Path(path)
         if not p.is_dir():
             return
-        if not (p / "image").is_dir():
-            return
 
         try:
-            self._dm = DataModule(str(p))
+            self._dm = DataModule(
+                str(p),
+                image_pattern=image_pattern,
+                mask_pattern=mask_pattern,
+                image_subdir_pattern=image_subdir_pattern,
+            )
         except Exception:
             _log.exception("Failed to load dataset from %s", p)
             return
@@ -359,6 +442,28 @@ class MainWindow(QMainWindow):
             self._schedule_image_refresh()
         except Exception:
             _log.exception("Failed to initialize UI for dataset %s", p)
+
+    def _on_reload_clicked(self) -> None:
+        if not self._dataset_dir:
+            return
+        try:
+            image_pat, mask_pat, subdir_pat = self._data_view.get_patterns()
+            write_params_yaml(
+                Path(self._dataset_dir),
+                {
+                    "image_pattern": image_pat,
+                    "mask_pattern": mask_pat,
+                    "image_subdir_pattern": subdir_pat,
+                },
+            )
+            self._load_dataset(
+                self._dataset_dir,
+                image_pattern=image_pat,
+                mask_pattern=mask_pat,
+                image_subdir_pattern=subdir_pat,
+            )
+        except Exception:
+            _log.exception("Failed to reload dataset")
 
     def _precompute_overlay_data(self) -> None:
         """Pre-load profiling tables into cache while DB is still open.
@@ -636,35 +741,41 @@ class MainWindow(QMainWindow):
         if self._dm is None or not self._current_table:
             return
 
-        # Shut down any previous PyGwalker server
         self._shutdown_pygwalker()
 
-        df = self._dm.get_table_df(self._current_table)
-        if df is None or df.empty:
-            return
-        df = df.copy()
-        if self._metadata_merged is not None and "well" in df.columns:
-            df = self._join_metadata(df)
-        _log.info("PyGwalker: sending %d rows, columns=%s", len(df), list(df.columns))
+        self._data_view.set_pygwalker_hint(0, sampled=False)
 
-        # Known profiling columns — always treat as categorical dimensions
+        self._pgw_loader_thread = QThread(self)
+        self._pgw_loader = _PygwalkerDataLoader(
+            self._dm, self._current_table, self._metadata_merged,
+        )
+        self._pgw_loader.moveToThread(self._pgw_loader_thread)
+        self._pgw_loader_thread.started.connect(self._pgw_loader.load)
+        self._pgw_loader.data_ready.connect(self._on_pygwalker_data_ready)
+        self._pgw_loader.error_occurred.connect(self._on_pygwalker_error)
+        self._pgw_loader_thread.start()
+
+    def _on_pygwalker_data_ready(self, payload: tuple) -> None:
+        """Receive prepared DataFrame from background loader and start server."""
+        self._pgw_loader_thread.quit()
+        self._pgw_loader_thread.wait()
+        self._pgw_loader.deleteLater()
+        self._pgw_loader = None
+        self._pgw_loader_thread.deleteLater()
+        self._pgw_loader_thread = None
+
+        df, sampled, before = payload
+        _log.info(
+            "PyGwalker: sending %d rows%s",
+            len(df),
+            f" (sampled from {before})" if sampled else "",
+        )
+
+        self._data_view.set_pygwalker_hint(len(df), sampled=sampled)
+
         profiling_cols = {"directory", "well", "field", "stack", "timepoint", "label"}
 
-        # Sample up to 200 rows per profiling group
-        group_cols = [c for c in profiling_cols - {"label"} if c in df.columns]
-        if group_cols and len(df) > 200:
-            before = len(df)
-            sampled_idx = (
-                df.groupby(group_cols, group_keys=False)
-                .apply(lambda g: g.sample(n=min(200, len(g)), random_state=42).index)
-                .explode()
-                .values
-            )
-            df = df.loc[sampled_idx].reset_index(drop=True)
-            _log.info("PyGwalker: sampled %d → %d rows (max 200 per group)", before, len(df))
-
         try:
-            # Disable PyGwalker network features to prevent SSL timeout on offline machines
             import os
             os.environ.setdefault("PYGWALKER_UPDATE_CHECK", "0")
             os.environ.setdefault("KANARIES_API_KEY", "")
@@ -723,6 +834,19 @@ class MainWindow(QMainWindow):
 
         except Exception:
             _log.exception("Failed to launch PyGwalker")
+
+    def _on_pygwalker_error(self, msg: str) -> None:
+        """Handle data loading error."""
+        if self._pgw_loader_thread is not None:
+            self._pgw_loader_thread.quit()
+            self._pgw_loader_thread.wait()
+        if self._pgw_loader is not None:
+            self._pgw_loader.deleteLater()
+            self._pgw_loader = None
+        if self._pgw_loader_thread is not None:
+            self._pgw_loader_thread.deleteLater()
+            self._pgw_loader_thread = None
+        _log.error("PyGwalker data loading failed: %s", msg)
 
     def _shutdown_pygwalker(self) -> None:
         """Shut down the PyGwalker server if running."""
@@ -1671,6 +1795,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._shutting_down = True
         self._shutdown_pygwalker()
+        if self._pgw_loader_thread is not None and self._pgw_loader_thread.isRunning():
+            self._pgw_loader_thread.quit()
+            self._pgw_loader_thread.wait(1000)
         self._cancel_workers()
         self._thread_pool.waitForDone(2000)
         # Flush Windows message queue to clear "Not Responding" state

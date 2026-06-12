@@ -4,9 +4,24 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import sys
 from pathlib import Path
 
 _SETUP_DONE = False
+
+
+def _ensure_std_streams() -> None:
+    """Redirect sys.stdout/stderr to os.devnull when None (pythonw.exe).
+
+    ``pythonw.exe`` launches the process without a console, leaving both
+    streams as ``None``.  Libraries such as ``logging.StreamHandler``
+    assume they are writable and crash with ``'NoneType' object has no
+    attribute 'write'``.
+    """
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
 
 
 def setup_logging() -> None:

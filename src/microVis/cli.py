@@ -1,9 +1,7 @@
-"""Create a Windows Start Menu shortcut for the microVis GUI application.
-
-The shortcut launches microVis inside the ``micro`` conda environment.
-"""
+"""Command-line interface for microVis."""
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -11,12 +9,40 @@ import tempfile
 from pathlib import Path
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser."""
+    parser = argparse.ArgumentParser(
+        prog="microvis",
+        description="microVis -- interactive visualization for microProfiler microscopy datasets",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser(
+        "install-shortcut",
+        help="Create Windows Start Menu and Desktop shortcut for the GUI",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "install-shortcut":
+        create_shortcut()
+        return 0
+
+    return 1
+
+
+# ── Windows shortcut creation ────────────────────────────────────────────
+
+
 def _find_conda_exe() -> str | None:
     """Return the path to ``conda.exe``, or *None* if not found."""
     conda = shutil.which("conda")
     if conda:
         return conda
-    # Common default locations
     for base in (
         Path.home() / "miniconda3",
         Path.home() / "miniforge3",
@@ -34,13 +60,11 @@ def _find_env_pythonw(env_name: str = "micro") -> str | None:
     conda_exe = _find_conda_exe()
     if conda_exe is None:
         return None
-    # Derive env prefix from conda's own prefix
     conda_prefix = Path(conda_exe).resolve().parent.parent
     env_prefix = conda_prefix / "envs" / env_name
     for candidate in (env_prefix / "pythonw.exe", env_prefix / "Scripts" / "pythonw.exe"):
         if candidate.exists():
             return str(candidate)
-    # Fallback: try conda info
     try:
         result = subprocess.run(
             ["conda", "info", "--envs", "--json"],
@@ -63,19 +87,18 @@ def _find_icon_ico() -> Path | None:
     """Return the path to the bundled ``icon.ico``."""
     try:
         from importlib.resources import files
-
         return Path(str(files("microVis.resources") / "icon.ico"))
     except Exception:
         return None
 
 
 def _desktop() -> Path:
-    """Return the user's Desktop directory."""
     return Path.home() / "Desktop"
-    
+
+
 def _start_menu_programs() -> Path:
-    """Return the user's Start Menu Programs directory."""
     return Path.home() / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs"
+
 
 def _create_with_pywin32(
     link_path: Path, target: str, args: str, icon: str, work_dir: str
@@ -102,7 +125,6 @@ def _create_with_ps(
     link_path: Path, target: str, args: str, icon: str, work_dir: str
 ) -> bool:
     """Create shortcut using PowerShell COM.  Return *True* on success."""
-    # Use single-quoted PowerShell strings; double any embedded single quotes
     def _ps(s: str) -> str:
         return s.replace("'", "''")
 
@@ -118,15 +140,12 @@ def _create_with_ps(
     )
     ps1: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".ps1", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".ps1", delete=False) as f:
             f.write(ps_script)
             ps1 = f.name
         subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1],
-            check=True,
-            capture_output=True,
+            check=True, capture_output=True,
         )
         return link_path.exists()
     except Exception:
@@ -139,11 +158,9 @@ def _create_with_ps(
 def create_shortcut() -> None:
     """Create shortcut that launches microVis in the *micro* conda env.
 
-    Uses ``pythonw.exe`` (windowless Python) to avoid a visible console window.
-    Falls back to ``conda run`` if the environment cannot be located directly.
-
-    Called automatically after package installation on Windows, and available
-    as the ``microvis-install-shortcut`` console command for manual re-creation.
+    Uses ``pythonw.exe`` (windowless Python) to avoid a visible console
+    window.  Falls back to ``conda run`` if the environment cannot be
+    located directly.
     """
     if sys.platform != "win32":
         print("Shortcut creation is only supported on Windows.")
@@ -152,7 +169,6 @@ def create_shortcut() -> None:
     icon_ico = _find_icon_ico()
     icon_str = str(icon_ico) if icon_ico else ""
 
-    # Try pythonw.exe for a console-free launch; fall back to conda run
     pythonw = _find_env_pythonw("micro")
     if pythonw:
         target = pythonw
@@ -177,3 +193,7 @@ def create_shortcut() -> None:
             print(f"Shortcut created: {link_path}")
         else:
             print("Failed to create shortcut. Install pywin32 (`pip install pywin32`) and retry.")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

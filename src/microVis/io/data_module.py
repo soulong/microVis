@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from microVis.log_utils import get_logger
 
@@ -33,13 +34,64 @@ def _infer_plate_dims(wells: list[str]) -> tuple[int, int]:
     return max_row, max_col
 
 
+def read_params_yaml(dataset_dir: Path) -> dict:
+    """Read image/mask/subdir patterns from ``.microprofiler/params.yaml``.
+
+    Returns a dict with keys ``image_pattern``, ``mask_pattern``,
+    ``image_subdir_pattern`` — each will be an empty string if missing.
+    """
+    yaml_path = dataset_dir / ".microprofiler" / "params.yaml"
+    if not yaml_path.exists():
+        return {"image_pattern": "", "mask_pattern": "", "image_subdir_pattern": ""}
+    with open(yaml_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        return {"image_pattern": "", "mask_pattern": "", "image_subdir_pattern": ""}
+    return {
+        "image_pattern": str(data.get("_image_pattern", "") or ""),
+        "mask_pattern": str(data.get("_mask_pattern", "") or ""),
+        "image_subdir_pattern": str(data.get("_image_subdir_pattern", "") or ""),
+    }
+
+
+def write_params_yaml(dataset_dir: Path, patterns: dict) -> None:
+    """Update the ``_image_pattern`` / ``_mask_pattern`` / ``_image_subdir_pattern``
+    fields in ``.microprofiler/params.yaml``, preserving other sections."""
+    yaml_path = dataset_dir / ".microprofiler" / "params.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict = {}
+    if yaml_path.exists():
+        with open(yaml_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
+    if "image_pattern" in patterns:
+        data["_image_pattern"] = patterns["image_pattern"]
+    if "mask_pattern" in patterns:
+        data["_mask_pattern"] = patterns["mask_pattern"]
+    if "image_subdir_pattern" in patterns:
+        data["_image_subdir_pattern"] = patterns["image_subdir_pattern"]
+
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
 class DataModule:
     """Data access layer wrapping microProfiler ImageDataset + results.db."""
 
-    def __init__(self, measurement_dir: str):
+    def __init__(
+        self,
+        measurement_dir: str,
+        image_pattern: str = "",
+        mask_pattern: str = "",
+        image_subdir_pattern: str = "",
+    ):
         self._root_dir = Path(measurement_dir)
         self._image_dir: Path | None = None
         self._dataset: Any = None
+        self._image_pattern = image_pattern
+        self._mask_pattern = mask_pattern
+        self._image_subdir_pattern = image_subdir_pattern
         self._db_path: Path | None = None
         self._db_conn: sqlite3.Connection | None = None
         self._db_tables: dict[str, dict[str, str]] = {}
@@ -58,15 +110,24 @@ class DataModule:
     # ── Initialization ─────────────────────────────────────────────
 
     def _init_dataset(self):
-        image_dir = self._root_dir / "image"
-        if not image_dir.is_dir():
-            raise FileNotFoundError(f"image/ directory not found in {self._root_dir}")
-
         from microProfiler import ImageDataset
 
-        self._dataset = ImageDataset(str(image_dir))
+        if not self._image_pattern or not self._mask_pattern:
+            raise ValueError(
+                "image_pattern and mask_pattern are required. "
+                "Set them in .microprofiler/params.yaml or via the Data tab."
+            )
+
+        kwargs: dict[str, Any] = {
+            "image_pattern": self._image_pattern,
+            "mask_pattern": self._mask_pattern,
+        }
+        if self._image_subdir_pattern:
+            kwargs["image_subdir_pattern"] = self._image_subdir_pattern
+
+        self._dataset = ImageDataset(self._root_dir, **kwargs)
+        self._image_dir = self._root_dir
         self._metadata = self._dataset.metadata
-        self._image_dir = image_dir
         _log.info("ImageDataset loaded: %d rows, channels=%s, masks=%s",
                    len(self._metadata), self.channels, self.mask_names)
 

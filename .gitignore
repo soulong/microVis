@@ -30,6 +30,8 @@ venv/
 # Non-package files
 .opencode/
 .claude/
+.scratch
 openspec/
 AGENTS.md
 CLAUDE.md
+CONTEXT.md

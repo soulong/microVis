@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QRadioButton,
@@ -70,6 +71,8 @@ class DataView(QWidget):
     """Data tab: dataset + metadata browsing, table view, PyGwalker integration."""
 
     dataset_browse_clicked = Signal()
+    dataset_selected = Signal(str)
+    reload_clicked = Signal()
     pygwalker_open_clicked = Signal()
     metadata_browse_clicked = Signal()
     metadata_merge_clicked = Signal()
@@ -87,7 +90,7 @@ class DataView(QWidget):
         # ── Row 1: Dataset browse + PyGwalker ──
         row1 = QHBoxLayout()
         row1.setAlignment(Qt.AlignBottom)
-        self._btn_dataset_browse = QPushButton("Select Dataset")
+        self._btn_dataset_browse = QPushButton("Select Dataset Directory")
         self._btn_dataset_browse.setProperty("class", "primary")
         self._btn_dataset_browse.setFixedHeight(12)
         self._btn_dataset_browse.clicked.connect(self.dataset_browse_clicked)
@@ -106,6 +109,62 @@ class DataView(QWidget):
         self._btn_pgw_open.clicked.connect(self.pygwalker_open_clicked)
         row1.addWidget(self._btn_pgw_open)
         layout.addLayout(row1)
+
+        # ── Pattern inputs (visible after dataset selected) ──
+        self._pattern_widgets: list[QWidget] = []
+
+        pat_header = QLabel("Image Pattern")
+        pat_header.setStyleSheet("font-weight: bold; color: #7a9aaa; margin-top: 4px;")
+        layout.addWidget(pat_header)
+        self._pattern_widgets.append(pat_header)
+
+        self._pattern_image_edit = QLineEdit()
+        self._pattern_image_edit.setPlaceholderText(
+            r"e.g. (?P<field>\d+)...ch(?P<channel>\d+)\.tiff"
+        )
+        self._pattern_image_edit.setStyleSheet(
+            "font-family: Consolas, monospace; font-size: 9pt;"
+        )
+        layout.addWidget(self._pattern_image_edit)
+        self._pattern_widgets.append(self._pattern_image_edit)
+
+        mask_header = QLabel("Mask Pattern")
+        mask_header.setStyleSheet("font-weight: bold; color: #7a9aaa; margin-top: 2px;")
+        layout.addWidget(mask_header)
+        self._pattern_widgets.append(mask_header)
+
+        self._pattern_mask_edit = QLineEdit()
+        self._pattern_mask_edit.setPlaceholderText(
+            r"e.g. ...cp_masks_(?P<mask_name>.+)\.png"
+        )
+        self._pattern_mask_edit.setStyleSheet(
+            "font-family: Consolas, monospace; font-size: 9pt;"
+        )
+        layout.addWidget(self._pattern_mask_edit)
+        self._pattern_widgets.append(self._pattern_mask_edit)
+
+        subdir_header = QLabel("Image Subdir Pattern")
+        subdir_header.setStyleSheet("font-weight: bold; color: #7a9aaa; margin-top: 2px;")
+        layout.addWidget(subdir_header)
+        self._pattern_widgets.append(subdir_header)
+
+        self._pattern_subdir_edit = QLineEdit()
+        self._pattern_subdir_edit.setPlaceholderText("e.g. Images/  (leave empty to scan root)")
+        self._pattern_subdir_edit.setStyleSheet(
+            "font-family: Consolas, monospace; font-size: 9pt;"
+        )
+        layout.addWidget(self._pattern_subdir_edit)
+        self._pattern_widgets.append(self._pattern_subdir_edit)
+
+        self._btn_reload = QPushButton("Reload Dataset")
+        self._btn_reload.setProperty("class", "primary")
+        self._btn_reload.setFixedHeight(12)
+        self._btn_reload.setEnabled(False)
+        self._btn_reload.clicked.connect(self.reload_clicked)
+        layout.addWidget(self._btn_reload)
+        self._pattern_widgets.append(self._btn_reload)
+
+        self._set_pattern_visible(False)
 
         # ── Row 2: Metadata browse + Merge/Clear/Write ──
         row2 = QHBoxLayout()
@@ -186,6 +245,24 @@ class DataView(QWidget):
 
     # ── Public methods ─────────────────────────────────────────────────────
 
+    def _set_pattern_visible(self, visible: bool) -> None:
+        for w in self._pattern_widgets:
+            w.setVisible(visible)
+
+    def set_patterns(self, image: str, mask: str, subdir: str) -> None:
+        self._pattern_image_edit.setText(image)
+        self._pattern_mask_edit.setText(mask)
+        self._pattern_subdir_edit.setText(subdir)
+        self._set_pattern_visible(True)
+        self._btn_reload.setEnabled(True)
+
+    def get_patterns(self) -> tuple[str, str, str]:
+        return (
+            self._pattern_image_edit.text().strip(),
+            self._pattern_mask_edit.text().strip(),
+            self._pattern_subdir_edit.text().strip(),
+        )
+
     def set_dataset_label(self, text: str) -> None:
         self._dataset_label.setText(text)
 
@@ -247,6 +324,20 @@ class DataView(QWidget):
             self._preview_hint.setVisible(True)
         else:
             self._preview_hint.setVisible(False)
+
+    def set_pygwalker_hint(self, row_count: int, sampled: bool = False) -> None:
+        """Show a hint after sending data to PyGwalker."""
+        if row_count == 0:
+            self._preview_hint.setText("Loading data for PyGwalker...")
+        elif sampled:
+            self._preview_hint.setText(
+                f"PyGwalker: sent {row_count} sampled rows (max 200 per group)"
+            )
+        else:
+            self._preview_hint.setText(
+                f"PyGwalker: sent all {row_count} rows"
+            )
+        self._preview_hint.setVisible(True)
 
     def set_pygwalker_buttons(self, has_tables: bool) -> None:
         self._btn_pgw_open.setEnabled(has_tables)

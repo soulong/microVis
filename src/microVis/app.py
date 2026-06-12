@@ -3,34 +3,66 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QTimer
+from PySide6.QtCore import Qt, QEvent, QObject, QTimer
 from PySide6.QtGui import QColor, QIcon, QPalette
-from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QComboBox
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QComboBox, QScrollArea
 
 from microVis.log_utils import setup_logging
 
 
 class _WheelBlocker(QObject):
-    """Event filter that blocks scroll-wheel on unfocused input widgets.
+    """Global event filter that redirects wheel events to QScrollAreas.
 
-    Uses hit-testing (widgetAt) + parent walk so the block works even when
-    the event targets a child widget (e.g. the QLineEdit inside a spinbox).
-    Only blocks when the widget does NOT already have keyboard focus — if
-    the user explicitly focused a spinbox, scrolling should still work.
+    Normal wheel (no modifiers) → redirected to the nearest QScrollArea so
+    the panel scrolls regardless of which widget the cursor is over.
+    Ctrl+wheel → passed through naturally so widgets like _ThumbnailView can
+    zoom (or other Ctrl+wheel actions).
+
+    Also prevents accidental value changes on unfocused QAbstractSpinBox /
+    QComboBox widgets by consuming their wheel events when no QScrollArea
+    ancestor is available to redirect to.
     """
 
     def eventFilter(self, watched, event):
         try:
             if event.type() != QEvent.Type.Wheel:
                 return False
+
             pos = event.globalPosition().toPoint()
-            w = QApplication.instance().widgetAt(pos)
-            for _ in range(4):
+            target = QApplication.instance().widgetAt(pos)
+            if target is None:
+                return False
+
+            # ── Walk parent chain ────────────────────────────────────────────
+            has_spin_or_combo = False
+            found_scroll: QScrollArea | None = None
+
+            w = target
+            for _ in range(12):
                 if w is None:
                     break
-                if isinstance(w, (QAbstractSpinBox, QComboBox)) and not w.hasFocus():
-                    return True
+                if isinstance(w, (QAbstractSpinBox, QComboBox)):
+                    has_spin_or_combo = True
+                    if w.hasFocus():
+                        return False        # Focused → let it self-handle
+                elif isinstance(w, QScrollArea) and found_scroll is None:
+                    found_scroll = w        # nearest QScrollArea ancestor
                 w = w.parentWidget()
+
+            # ── Ctrl+wheel: natural dispatch (zoom, etc.) ───────────────────
+            if event.modifiers() & Qt.ControlModifier:
+                return False
+
+            # ── Normal wheel: redirect to the nearest QScrollArea ────────────
+            if found_scroll is not None:
+                vbar = found_scroll.verticalScrollBar()
+                delta = event.angleDelta().y()
+                vbar.setValue(vbar.value() - delta)
+                return True
+
+            # ── No scroll area: block unfocused spinbox/combo value change ──
+            if has_spin_or_combo:
+                return True
             return False
         except KeyboardInterrupt:
             sys.exit(0)

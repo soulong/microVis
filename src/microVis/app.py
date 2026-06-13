@@ -80,6 +80,12 @@ def run_app(dataset_dir: str | None = None) -> None:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("microVis")
+    except Exception:
+        pass
+
     # Block scroll-wheel on all input widgets app-wide
     app.installEventFilter(_WheelBlocker(app))
     app.setApplicationName("microVis")
@@ -121,7 +127,7 @@ def run_app(dataset_dir: str | None = None) -> None:
         window.setWindowIcon(icon)
     window.show()
 
-    # Reinforce icon after window is fully rendered (fixes inconsistent taskbar icon on Windows)
+    # Reinforce icon after window is fully rendered (fixes taskbar icon lost after AppUserModelID)
     if icon:
         QTimer.singleShot(200, lambda: window.setWindowIcon(icon))
 

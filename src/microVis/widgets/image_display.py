@@ -161,21 +161,27 @@ class _ThumbnailView(QGraphicsView):
         # Check for drag initiation (left button held + moved beyond threshold)
         if self._drag_start_pos is not None and event.buttons() & Qt.LeftButton:
             dist = (event.pos() - self._drag_start_pos).manhattanLength()
-            if dist > 4 and self._mask is not None:
-                scene_pos = self.mapToScene(event.pos())
-                x = int(scene_pos.x())
-                y = int(scene_pos.y())
-                h, w = self._mask.shape
-                if 0 <= x < w and 0 <= y < h:
-                    lbl = int(self._mask[y, x])
-                    if lbl > 0:
-                        self._start_object_drag(lbl)
-                        return
-            if dist > 4 and self._mask is None:
-                self._panning = True
-                self._pan_start = event.pos()
-                self.setCursor(Qt.ClosedHandCursor)
-                event.accept()
+            if dist > 4:
+                zoom = self.transform().m11()
+                # Always try object drag first if mask exists
+                if self._mask is not None:
+                    scene_pos = self.mapToScene(event.pos())
+                    x = int(scene_pos.x())
+                    y = int(scene_pos.y())
+                    h, w = self._mask.shape
+                    if 0 <= x < w and 0 <= y < h:
+                        lbl = int(self._mask[y, x])
+                        if lbl > 0:
+                            self._start_object_drag(lbl)
+                            return
+                # Zoomed in + no object found → pan
+                if zoom > 1.0:
+                    self._panning = True
+                    self._pan_start = event.pos()
+                    self.setCursor(Qt.ClosedHandCursor)
+                    event.accept()
+                    return
+                # Unzoomed: do nothing (no pan, no object to drag)
                 return
 
         # Per-object tooltip on hover

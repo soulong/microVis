@@ -56,8 +56,18 @@ class _WheelBlocker(QObject):
             # ── Normal wheel: redirect to the nearest QScrollArea ────────────
             if found_scroll is not None:
                 vbar = found_scroll.verticalScrollBar()
-                delta = event.angleDelta().y()
-                vbar.setValue(vbar.value() - delta)
+                hbar = found_scroll.horizontalScrollBar()
+                dx = event.angleDelta().x()
+                dy = event.angleDelta().y()
+                # Horizontal swipe (touchpad) → horizontal scrollbar
+                if dx != 0 and hbar.minimum() < hbar.maximum():
+                    hbar.setValue(hbar.value() - dx)
+                # Vertical swipe (mouse wheel or touchpad) → vertical priority
+                if dy != 0:
+                    if vbar.minimum() < vbar.maximum():
+                        vbar.setValue(vbar.value() - dy)
+                    elif hbar.minimum() < hbar.maximum():
+                        hbar.setValue(hbar.value() - dy)
                 return True
 
             # ── No scroll area: block unfocused spinbox/combo value change ──

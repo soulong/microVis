@@ -255,10 +255,10 @@ class FullResWorker(QRunnable):
 
             # Extract mask for interactivity (hover/drag) and optional overlay
             full_mask = None
-            if mask_dict:
+            if self._need_polygons and mask_dict:
                 first_key = next(iter(mask_dict))
                 full_mask = mask_dict[first_key]
-                if self._need_polygons and full_mask is not None:
+                if full_mask is not None:
                     from microVis.processing.overlay import extract_polygons
                     from microVis.widgets.image_display import _draw_polygon_overlays
                     polygons = extract_polygons(full_mask)

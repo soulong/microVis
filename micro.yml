@@ -1,0 +1,27 @@
+name: micro
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10
+  - numpy
+  - pandas
+  - scipy
+  - scikit-image
+  - tifffile
+  - cellpose
+  - torch
+  - jax
+  - pyyaml
+  - tqdm
+  - pyside6
+  - natsort
+  - pydantic>=2.0
+  - pillow
+  - matplotlib
+  - openpyxl
+  - pytest
+  - pytest-cov
+  - ruff
+  - pip:
+    - pygwalker>=0.4
